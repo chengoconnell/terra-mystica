@@ -1,0 +1,28 @@
+{
+    // Format with Black on save
+    "[python]": {
+        "editor.formatOnSave": true,
+        "editor.defaultFormatter": "ms-python.black-formatter"
+    },
+    
+    // Black formatter settings
+    "black-formatter.args": [
+        "--line-length=88"  // Black's default
+    ],
+    
+    // Enable type checking with mypy
+    "python.linting.mypyEnabled": true,
+    "python.linting.enabled": true,
+    "python.linting.mypyArgs": [
+        "--strict",
+        "--follow-imports=silent",
+        "--ignore-missing-imports",
+        "--show-column-numbers"
+    ],
+    
+    // Run mypy on save
+    "python.linting.lintOnSave": true,
+    
+    // Optional: Show mypy errors inline
+    "python.analysis.typeCheckingMode": "strict"
+}
