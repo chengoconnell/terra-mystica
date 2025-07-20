@@ -1,291 +1,338 @@
-"""Board module for Terra Mystica.
+"""Board module - game board representation and hex grid management.
 
-This module manages the game board including terrain types and structure placement.
+This module implements the hexagonal game board for Terra Mystica,
+including terrain types, structure placement, and adjacency calculations.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
-from .coordinate import Coordinate
-from .core import Terrain
+from dataclasses import dataclass
+from enum import Enum, auto
+from typing import TYPE_CHECKING, Self, Dict, Set, Optional, List, Tuple
 
 if TYPE_CHECKING:
+    from .game import Game
     from .player import Player
     from .structures import StructureType
-    from .types import HexData, AdjacencyData, BoardStateData
+
+
+class TerrainType(Enum):
+    """
+    The seven terrain types in Terra Mystica.
+
+    TYPE: Enum for type-safe terrain identification.
+    """
+
+    PLAINS = auto()
+    SWAMP = auto()
+    LAKES = auto()
+    FOREST = auto()
+    MOUNTAINS = auto()
+    WASTELAND = auto()
+    DESERT = auto()
+
+
+@dataclass(frozen=True)
+class AxialCoord:
+    """
+    Axial coordinate system for hexagonal grid.
+
+    DATASTRUCT: Immutable value object for hex coordinates. Uses the axial coordinate system where q is the column and r is the row (diagonal from NW to SE).
+    """
+
+    q: int  # Column
+    r: int  # Row
+
+    def neighbors(self) -> List[AxialCoord]:
+        """Get all 6 neighboring hex coordinates."""
+        directions = [
+            AxialCoord(1, 0),  # East
+            AxialCoord(1, -1),  # Northeast
+            AxialCoord(0, -1),  # Northwest
+            AxialCoord(-1, 0),  # West
+            AxialCoord(-1, 1),  # Southwest
+            AxialCoord(0, 1),  # Southeast
+        ]
+        return [AxialCoord(self.q + d.q, self.r + d.r) for d in directions]
+
+    def distance_to(self, other: AxialCoord) -> int:
+        """Calculate hex distance to another coordinate."""
+        return (
+            abs(self.q - other.q)
+            + abs(self.q + self.r - other.q - other.r)
+            + abs(self.r - other.r)
+        ) // 2
+
+
+@dataclass
+class Hex:
+    """
+    A single hexagonal space on the board.
+    """
+
+    coord: AxialCoord
+    terrain: TerrainType
+    owner: Optional[Player] = None
+    structure: Optional[StructureType] = None
+    is_river: bool = False  # Simplified: River as hex property
 
 
 class Board:
-    """Manages the game board state including terrain and structures.
+    """
+    Represents the game board with hexagonal grid.
 
-    PATTERN: Information Expert - Board is the expert on terrain and adjacency.
+    PATTERN: Composite - Board is composed of hexagonal spaces.
+    PATTERN: Repository - Provides methods to query and modify hex state.
+
+    Simplified from full Terra Mystica:
+    - Fixed small board size instead of variable setup
+    - Rivers marked as hex properties instead of edges
+    - No pre-printed structures or special spaces
     """
 
-    _terrain: dict[Coordinate, Terrain]
-    """DATASTRUCT: Dictionary mapping hex coordinates to terrain types.
-    
-    This spatial dictionary provides O(1) lookup for terrain at any coordinate,
-    making it efficient for checking valid moves and transformations.
-    """
+    _game: Game
+    _hexes: Dict[AxialCoord, Hex]
 
-    _structures: dict[Coordinate, Player]
-    """DATASTRUCT: Dictionary mapping hex coordinates to structure owners.
-    
-    This ownership map allows fast lookups for adjacency checks and ensures
-    only one structure per hex. The Player reference enables quick access to
-    owner information for power gains and adjacency bonuses.
-    """
-
-    def __new__(cls) -> Board:
-        """Create a new board with default terrain layout.
-
-        Constructor for Board, for use by Game only.
-
-        PATTERN: Factory Method - Board instances can only be created through
-        Game's factory methods to ensure proper registration and validation.
-
-        For our simplified version, we'll create a small hex grid with
-        varied terrain types.
-
-        Raises:
-            TypeError: If attempting to construct directly outside of Game
+    @classmethod
+    def _create_for_game(cls, game: Game) -> Self:
         """
-        # Check if we're allowed to construct
-        from .game import Game
+        Create a board instance for a game.
 
-        if not Game._is_constructing_board():
-            raise TypeError(
-                "Board instances cannot be constructed directly. Use Game constructor."
-            )
-        self = object.__new__(cls)
-        self._terrain = {}
-        self._structures = {}
-
-        # Initialize a small hex grid with varied terrain
-        # Using axial coordinates (q, r) for a roughly diamond-shaped board
-        self._initialize_terrain()
-
-        return self
-
-    def _initialize_terrain(self) -> None:
-        """Initialize the board with a default terrain layout.
-
-        Creates a small hex grid suitable for 2-4 players.
+        This is a private factory method only for use by the Game class.
         """
-        # Define a simple 5x5 hex grid centered at (0,0)
-        # This gives us 19 hexes in a compact layout
-        terrain_layout = [
-            # Row -2
-            (Coordinate(-1, -2), Terrain.MOUNTAINS),
-            (Coordinate(0, -2), Terrain.FOREST),
-            (Coordinate(1, -2), Terrain.LAKES),
-            # Row -1
-            (Coordinate(-2, -1), Terrain.WASTELAND),
-            (Coordinate(-1, -1), Terrain.PLAINS),
-            (Coordinate(0, -1), Terrain.SWAMP),
-            (Coordinate(1, -1), Terrain.DESERT),
-            # Row 0 (center)
-            (Coordinate(-2, 0), Terrain.FOREST),
-            (Coordinate(-1, 0), Terrain.LAKES),
-            (Coordinate(0, 0), Terrain.MOUNTAINS),  # Center hex
-            (Coordinate(1, 0), Terrain.PLAINS),
-            (Coordinate(2, 0), Terrain.WASTELAND),
-            # Row 1
-            (Coordinate(-1, 1), Terrain.SWAMP),
-            (Coordinate(0, 1), Terrain.DESERT),
-            (Coordinate(1, 1), Terrain.FOREST),
-            (Coordinate(2, 1), Terrain.LAKES),
-            # Row 2
-            (Coordinate(0, 2), Terrain.PLAINS),
-            (Coordinate(1, 2), Terrain.WASTELAND),
-            (Coordinate(2, 2), Terrain.MOUNTAINS),
-        ]
+        obj = object.__new__(cls)
+        obj._game = game
+        obj._hexes = {}
+        obj._initialize_board()
+        return obj
 
-        # Populate the terrain dictionary
-        for coord, terrain in terrain_layout:
-            self._terrain[coord] = terrain
-
-    def get_terrain(self, coordinate: Coordinate) -> Terrain | None:
-        """Get the terrain type at the specified coordinate.
-
-        Args:
-            coordinate: The coordinate to check
-
-        Returns:
-            The terrain type, or None if coordinate is not on the board
+    def _initialize_board(self) -> None:
         """
-        return self._terrain.get(coordinate)
+        Initialize the board with a default layout.
 
-    def get_structure_owner(self, coordinate: Coordinate) -> Player | None:
-        """Get the player who owns a structure at this coordinate.
-
-        Args:
-            coordinate: The coordinate to check
-
-        Returns:
-            The player who owns the structure, or None if no structure exists
+        Simplified from full Terra Mystica: Using a smaller fixed layout
+        with 37 hexes (similar to a radius-3 hex grid).
         """
-        return self._structures.get(coordinate)
+        # Create a hexagonal board with radius 3 from center
+        center = AxialCoord(0, 0)
+        radius = 3
 
-    def is_valid_coordinate(self, coordinate: Coordinate) -> bool:
-        """Check if a coordinate is on the board.
+        # Generate all hexes within radius
+        for q in range(-radius, radius + 1):
+            for r in range(max(-radius, -q - radius), min(radius, -q + radius) + 1):
+                coord = AxialCoord(q, r)
+                # Assign terrain in a pattern (simplified from actual game)
+                terrain = self._assign_terrain(q, r)
+                # Mark some hexes as rivers (simplified pattern)
+                is_river = (q + r) % 5 == 0 and abs(q) + abs(r) > 1
 
-        Args:
-            coordinate: The coordinate to check
+                self._hexes[coord] = Hex(
+                    coord=coord, terrain=terrain, is_river=is_river
+                )
 
-        Returns:
-            True if the coordinate is on the board, False otherwise
+    def _assign_terrain(self, q: int, r: int) -> TerrainType:
         """
-        return coordinate in self._terrain
+        Assign terrain types in a deterministic pattern.
 
-    def transform_terrain(self, coordinate: Coordinate, new_terrain: Terrain) -> None:
-        """Transform the terrain at the specified coordinate.
-
-        STAGING: Validates coordinate exists on the board.
-
-        Args:
-            coordinate: Where to transform terrain
-            new_terrain: The new terrain type
-
-        Raises:
-            ValueError: If coordinate is not on the board
+        Simplified from full Terra Mystica: Using a mathematical
+        pattern instead of the actual game board layout.
         """
-        if not self.is_valid_coordinate(coordinate):
-            raise ValueError(f"Coordinate {coordinate} is not on the board")
+        # Create a varied but deterministic terrain distribution
+        terrain_index = (abs(q * 3 + r * 2) + abs(q - r)) % 7
+        return list(TerrainType)[terrain_index]
 
-        self._terrain[coordinate] = new_terrain
+    def get_hex(self, coord: AxialCoord) -> Optional[Hex]:
+        """Get the hex at the given coordinate, or None if out of bounds."""
+        return self._hexes.get(coord)
 
-    def place_structure(self, coordinate: Coordinate, player: Player) -> None:
-        """Place a structure owned by the player at the coordinate.
+    def get_all_hexes(self) -> List[Hex]:
+        """Get all hexes on the board."""
+        return list(self._hexes.values())
 
-        STAGING: Validates coordinate exists on board and no existing structure at location.
-
-        Args:
-            coordinate: Where to place the structure
-            player: The player who owns the structure
-
-        Raises:
-            ValueError: If coordinate is not on board or already has a structure
+    def get_adjacent_hexes(self, coord: AxialCoord) -> List[Hex]:
         """
-        if not self.is_valid_coordinate(coordinate):
-            raise ValueError(f"Coordinate {coordinate} is not on the board")
+        Get all adjacent hexes (directly neighboring).
 
-        if coordinate in self._structures:
-            raise ValueError(f"Coordinate {coordinate} already has a structure")
-
-        self._structures[coordinate] = player
-
-    def get_adjacent_players(self, coordinate: Coordinate) -> set[Player]:
-        """Get all players who have structures adjacent to this coordinate.
-
-        Args:
-            coordinate: The coordinate to check adjacency for
-
-        Returns:
-            Set of players with structures adjacent to this coordinate
+        This handles land adjacency only. River crossings require
+        shipping and are handled separately.
         """
-        adjacent_players = set()
+        adjacent = []
+        for neighbor_coord in coord.neighbors():
+            if hex_space := self.get_hex(neighbor_coord):
+                # Check if there's a river between the hexes
+                if not self._is_river_between(coord, neighbor_coord):
+                    adjacent.append(hex_space)
+        return adjacent
 
-        # Check all neighboring coordinates
-        for neighbor in coordinate.neighbors():
-            if owner := self._structures.get(neighbor):
-                adjacent_players.add(owner)
-
-        return adjacent_players
-
-    def get_hex_data(self, coordinate: Coordinate) -> HexData | None:
-        """Get complete hex information as a TypedDict.
-
-        TYPE: Returns HexData for type-safe hex state representation.
-
-        Args:
-            coordinate: The coordinate to get data for
-
-        Returns:
-            HexData with complete hex state, or None if invalid coordinate
+    def _is_river_between(self, coord1: AxialCoord, coord2: AxialCoord) -> bool:
         """
-        terrain = self.get_terrain(coordinate)
-        if terrain is None:
-            return None
+        Check if there's a river between two adjacent hexes.
 
-        owner = self.get_structure_owner(coordinate)
-
-        # Get structure type from owner if present
-        structure_type_str: str | None = None
-        if owner is not None:
-            # Import here to avoid circular dependency
-            from .game import Game
-
-            if hasattr(owner, "_structures"):
-                structure_type = owner._structures.get(coordinate)
-                if structure_type:
-                    structure_type_str = structure_type.name.lower()
-
-        return HexData(
-            coordinate=(coordinate.q, coordinate.r),
-            terrain=terrain.name.lower(),  # Convert enum name to lowercase string
-            owner=owner.faction.value if owner else None,
-            structure=structure_type_str,
-        )
-
-    def get_adjacency_data(
-        self, coordinate: Coordinate, player: Player | None = None
-    ) -> AdjacencyData:
-        """Get adjacency information for a coordinate.
-
-        TYPE: Returns AdjacencyData for type-safe adjacency queries.
-
-        Args:
-            coordinate: The coordinate to check adjacency for
-            player: Optional player to check if opponents are adjacent
-
-        Returns:
-            AdjacencyData with adjacency information
+        Simplified from full Terra Mystica: Rivers are properties of hexes
+        rather than edges. If either hex is a river, they're separated.
         """
-        adjacent_players = self.get_adjacent_players(coordinate)
-        adjacent_factions = [p.faction.value for p in adjacent_players]
+        hex1 = self.get_hex(coord1)
+        hex2 = self.get_hex(coord2)
+        if hex1 and hex2:
+            return hex1.is_river or hex2.is_river
+        return False
 
-        has_opponent = False
-        if player is not None:
-            has_opponent = any(p != player for p in adjacent_players)
-
-        return AdjacencyData(
-            coordinate=(coordinate.q, coordinate.r),
-            adjacent_players=adjacent_factions,
-            adjacent_count=len(adjacent_players),
-            has_opponent=has_opponent,
-        )
-
-    def get_board_state(self) -> BoardStateData:
-        """Get complete board state as a TypedDict.
-
-        TYPE: Returns BoardStateData for type-safe board representation.
-
-        This method provides a structured view of the entire board,
-        useful for serialization, analysis, or display.
-
-        Returns:
-            BoardStateData with all hexes and aggregate information
+    def get_reachable_hexes(
+        self, coord: AxialCoord, shipping_level: int = 0
+    ) -> Set[AxialCoord]:
         """
-        hexes: list[HexData] = []
-        terrain_counts: dict[str, int] = {}
+        Get all hexes reachable from a given hex.
 
-        # Collect data for all hexes
-        for coord, terrain in self._terrain.items():
-            hex_data = self.get_hex_data(coord)
-            if hex_data:  # Should always be true for valid coords
-                hexes.append(hex_data)
+        This includes direct adjacency and river crossings based on
+        shipping level. Uses breadth-first search.
 
-                # Count terrain types
-                terrain_name = terrain.name.lower()
-                terrain_counts[terrain_name] = terrain_counts.get(terrain_name, 0) + 1
+        Simplified from full Terra Mystica: Shipping allows crossing
+        one river per shipping level in a straight line.
+        """
+        if self.get_hex(coord) is None:
+            return set()
 
-        # Sort hexes by coordinate for consistent ordering
-        hexes.sort(key=lambda h: (h["coordinate"][0], h["coordinate"][1]))
+        reachable: Set[AxialCoord] = {coord}
 
-        return BoardStateData(
-            hexes=hexes,
-            occupied_count=len(self._structures),
-            terrain_counts=terrain_counts,
-        )
+        # Direct land adjacency
+        for adj_hex in self.get_adjacent_hexes(coord):
+            reachable.add(adj_hex.coord)
+
+        # River crossings with shipping
+        if shipping_level > 0:
+            # Simplified: Can reach hexes up to shipping_level rivers away
+            # in any direction (not just straight lines)
+            to_check = [coord]
+            rivers_crossed = 0
+
+            while to_check and rivers_crossed < shipping_level:
+                next_level = []
+                for check_coord in to_check:
+                    for neighbor_coord in check_coord.neighbors():
+                        if neighbor_coord not in reachable:
+                            if neighbor_hex := self.get_hex(neighbor_coord):
+                                if self._is_river_between(check_coord, neighbor_coord):
+                                    reachable.add(neighbor_coord)
+                                    next_level.append(neighbor_coord)
+                to_check = next_level
+                if next_level:
+                    rivers_crossed += 1
+
+        return reachable
+
+    def place_structure(
+        self, coord: AxialCoord, player: Player, structure: StructureType
+    ) -> None:
+        """
+        Place a structure on a hex.
+
+        This method assumes validation has already been done by the
+        action system. It only updates the board state.
+        """
+        if hex_space := self.get_hex(coord):
+            hex_space.owner = player
+            hex_space.structure = structure
+
+    def terraform(self, coord: AxialCoord, new_terrain: TerrainType) -> None:
+        """
+        Change the terrain type of a hex.
+
+        This method assumes validation has already been done by the
+        action system. It only updates the board state.
+        """
+        if hex_space := self.get_hex(coord):
+            hex_space.terrain = new_terrain
+
+    def get_structures_of_player(
+        self, player: Player
+    ) -> List[Tuple[AxialCoord, StructureType]]:
+        """Get all structures owned by a player."""
+        structures = []
+        for hex_space in self._hexes.values():
+            if hex_space.owner == player and hex_space.structure:
+                structures.append((hex_space.coord, hex_space.structure))
+        return structures
+
+    def calculate_largest_area(self, player: Player) -> int:
+        """
+        Calculate the size of the largest connected area for a player.
+
+        Connected means adjacent by land or reachable via shipping.
+        Uses union-find algorithm for efficiency.
+
+        DATASTRUCT: Union-find (disjoint set) for connected components.
+        """
+        # Get all structures of the player
+        player_structures = self.get_structures_of_player(player)
+        if not player_structures:
+            return 0
+
+        # Build adjacency considering shipping
+        # Simplified: Assume player has basic shipping for scoring
+        shipping_level = 1  # TODO: Get from player
+
+        # Union-find to track connected components
+        parent: Dict[AxialCoord, AxialCoord] = {}
+        size: Dict[AxialCoord, int] = {}
+
+        def find(coord: AxialCoord) -> AxialCoord:
+            if coord not in parent:
+                parent[coord] = coord
+                size[coord] = 1
+            if parent[coord] != coord:
+                parent[coord] = find(parent[coord])  # Path compression
+            return parent[coord]
+
+        def union(coord1: AxialCoord, coord2: AxialCoord) -> None:
+            root1, root2 = find(coord1), find(coord2)
+            if root1 != root2:
+                # Union by size
+                if size[root1] < size[root2]:
+                    root1, root2 = root2, root1
+                parent[root2] = root1
+                size[root1] += size[root2]
+
+        # Initialize all player structures
+        structure_coords = {coord for coord, _ in player_structures}
+        for coord in structure_coords:
+            find(coord)  # Initialize in union-find
+
+        # Connect adjacent structures
+        for coord in structure_coords:
+            reachable = self.get_reachable_hexes(coord, shipping_level)
+            for other_coord in reachable:
+                if other_coord in structure_coords:
+                    union(coord, other_coord)
+
+        # Find largest component
+        return max(size[find(coord)] for coord in structure_coords)
+
+    def is_hex_reachable_by_player(
+        self, coord: AxialCoord, player: Player, include_shipping: bool = True
+    ) -> bool:
+        """
+        Check if a hex is reachable by a player.
+
+        A hex is reachable if it's adjacent to any of the player's structures,
+        either directly or via shipping range (if include_shipping is True).
+        """
+        player_structures = self.get_structures_of_player(player)
+        if not player_structures:
+            return False
+
+        # Check direct adjacency first
+        for struct_coord, _ in player_structures:
+            adjacent_hexes = self.get_adjacent_hexes(struct_coord)
+            if any(h.coord == coord for h in adjacent_hexes):
+                return True
+
+        # Check shipping range if enabled
+        if include_shipping:
+            shipping_level = player.get_shipping_level()
+            if shipping_level > 0:
+                for struct_coord, _ in player_structures:
+                    reachable = self.get_reachable_hexes(struct_coord, shipping_level)
+                    if coord in reachable:
+                        return True
+
+        return False

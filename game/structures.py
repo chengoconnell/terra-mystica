@@ -1,102 +1,205 @@
-"""Structure types for Terra Mystica.
+"""Structures module - building types and upgrade paths.
 
-This module defines structure types using a data-driven approach with
-enums and dataclasses, separating type identification from static data.
+This module defines the various structure types in Terra Mystica,
+their costs, upgrade paths, and associated game mechanics.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
-from typing import Final, Mapping
+from enum import Enum, auto
+from typing import Dict, List, Optional, Set
 
-from .core import Resource
+from .resources import Resources, PowerBowls
 
 
 class StructureType(Enum):
-    """Type: An enumeration of all possible structure types in the game."""
+    """
+    Types of structures that can be built.
 
-    DWELLING = "Dwelling"
-    TRADING_HOUSE = "Trading House"
-    TEMPLE = "Temple"
-    SANCTUARY = "Sanctuary"
-    STRONGHOLD = "Stronghold"
+    TYPE: Enum for type-safe structure identification.
+    """
+
+    DWELLING = auto()
+    TRADING_HOUSE = auto()
+    TEMPLE = auto()
+    SANCTUARY = auto()
+    STRONGHOLD = auto()
 
 
 @dataclass(frozen=True)
 class StructureData:
-    """Type: An immutable dataclass to hold the static properties of a structure.
+    """
+    Static data about a structure type.
 
-    This is a Value Object. Its identity is defined by its data.
+    TYPE: Frozen dataclass for immutable structure properties.
     """
 
-    power_value: int
-    base_cost: Mapping[Resource, int]
-    # The structure this one is upgraded from, if any.
-    upgrades_from: StructureType | None = None
+    name: str
+    power_value: int  # For calculating towns and adjacency bonuses
+    base_cost: Resources  # Cost to build (not upgrade)
+    income: Resources  # Income provided during income phase
+    victory_points: int = 0  # VP awarded when built/upgraded
+    max_per_player: Optional[int] = None  # None means unlimited
 
 
-# =============================================================================
-# The Structure Registry
-# =============================================================================
-
-# This dictionary acts as a central, immutable source of truth for all
-# structure data, mapping the enum to its corresponding data object.
-#
-# DATASTRUCT: Registry pattern mapping structure types to their static data.
-# This immutable dictionary serves as a centralized lookup table for structure
-# properties, separating data from behavior. The registry pattern allows easy
-# extension of structure types and ensures consistent access to structure
-# metadata throughout the game engine.
-
-STRUCTURE_DATA: Final[Mapping[StructureType, StructureData]] = {
+# Structure definitions
+STRUCTURE_DATA: Dict[StructureType, StructureData] = {
     StructureType.DWELLING: StructureData(
+        name="Dwelling",
         power_value=1,
-        base_cost={Resource.WORKER: 1, Resource.COIN: 2},
+        base_cost=Resources(workers=1, coins=2),
+        income=Resources(workers=1),  # Dwellings provide worker income
+        victory_points=2,
+        max_per_player=None,  # Unlimited dwellings
     ),
     StructureType.TRADING_HOUSE: StructureData(
+        name="Trading House",
         power_value=2,
-        # The base cost is 6 coins, as per the rulebook (p. 11).
-        # The discount to 3 coins is a conditional rule handled by the
-        # game logic, not a property of the structure itself.
-        base_cost={Resource.WORKER: 2, Resource.COIN: 6},
-        upgrades_from=StructureType.DWELLING,
+        base_cost=Resources(workers=2, coins=3),  # Base cost before adjacency discount
+        income=Resources(coins=2),  # Trading houses provide coin income
+        victory_points=3,
+        max_per_player=None,  # Unlimited trading houses
     ),
     StructureType.TEMPLE: StructureData(
+        name="Temple",
         power_value=2,
-        base_cost={Resource.WORKER: 2, Resource.COIN: 5},
-        upgrades_from=StructureType.TRADING_HOUSE,
+        base_cost=Resources(workers=2, coins=5),
+        income=Resources(priests=1),  # Priest income
+        victory_points=3,
+        max_per_player=None,  # Can have multiple temples
     ),
     StructureType.SANCTUARY: StructureData(
+        name="Sanctuary",
         power_value=3,
-        base_cost={Resource.WORKER: 4, Resource.COIN: 10},
-        upgrades_from=StructureType.TEMPLE,
+        base_cost=Resources(workers=4, coins=6),
+        income=Resources(priests=1),  # Also priest income
+        victory_points=5,
+        max_per_player=1,  # Only one sanctuary per player
     ),
     StructureType.STRONGHOLD: StructureData(
+        name="Stronghold",
         power_value=3,
-        # Note: The cost for the Stronghold is faction-specific.
-        # This base_cost would be overridden by faction-specific data.
-        base_cost={Resource.WORKER: 4, Resource.COIN: 10},
-        upgrades_from=StructureType.TRADING_HOUSE,
+        base_cost=Resources(workers=4, coins=6),
+        income=Resources(),  # Strongholds provide special abilities, not regular income
+        victory_points=5,
+        max_per_player=1,  # Only one stronghold per player
     ),
 }
 
 
-def get_structure_data(structure_type: StructureType) -> StructureData:
-    """Get the static data for a structure type.
-
-    Args:
-        structure_type: The type of structure to get data for
-
-    Returns:
-        The static data for that structure type
-
-    Raises:
-        KeyError: If structure type not found in registry
-
-    PATTERN: Registry. The STRUCTURE_DATA dictionary acts as a central,
-         immutable registry to look up data for any given StructureType.
+@dataclass(frozen=True)
+class UpgradePath:
     """
-    data = STRUCTURE_DATA[structure_type]
-    assert isinstance(data, StructureData)
-    return data
+    Represents a valid structure upgrade path.
+
+    PATTERN: Value Object - Immutable representation of upgrade rules.
+    """
+
+    from_structure: StructureType
+    to_structure: StructureType
+    cost: Resources  # Additional cost beyond base building cost
+
+
+# Valid upgrade paths
+UPGRADE_PATHS: List[UpgradePath] = [
+    # Dwelling upgrades
+    UpgradePath(
+        from_structure=StructureType.DWELLING,
+        to_structure=StructureType.TRADING_HOUSE,
+        cost=Resources(workers=2, coins=3),
+    ),
+    # Trading House upgrades (player chooses one path)
+    UpgradePath(
+        from_structure=StructureType.TRADING_HOUSE,
+        to_structure=StructureType.TEMPLE,
+        cost=Resources(workers=2, coins=5),
+    ),
+    UpgradePath(
+        from_structure=StructureType.TRADING_HOUSE,
+        to_structure=StructureType.STRONGHOLD,
+        cost=Resources(workers=4, coins=6),
+    ),
+    # Temple upgrade
+    UpgradePath(
+        from_structure=StructureType.TEMPLE,
+        to_structure=StructureType.SANCTUARY,
+        cost=Resources(workers=4, coins=6),
+    ),
+]
+
+
+def get_structure_data(structure_type: StructureType) -> StructureData:
+    """Get the static data for a structure type."""
+    return STRUCTURE_DATA[structure_type]
+
+
+def get_upgrade_paths_from(structure_type: StructureType) -> List[StructureType]:
+    """
+    Get valid upgrade targets from a given structure type.
+
+    Returns a list of structure types this can be upgraded to.
+    """
+    return [
+        path.to_structure
+        for path in UPGRADE_PATHS
+        if path.from_structure == structure_type
+    ]
+
+
+def get_upgrade_cost(
+    from_structure: StructureType, to_structure: StructureType
+) -> Optional[Resources]:
+    """
+    Get the cost to upgrade from one structure to another.
+
+    Returns None if the upgrade path is not valid.
+    """
+    for path in UPGRADE_PATHS:
+        if path.from_structure == from_structure and path.to_structure == to_structure:
+            return path.cost
+    return None
+
+
+def can_build_structure(
+    structure_type: StructureType,
+    existing_structures: Set[StructureType],
+) -> bool:
+    """
+    Check if a structure type can be built given existing structures.
+
+    This enforces max per player limits.
+
+    Simplified from full Terra Mystica: Not checking faction-specific
+    stronghold abilities or special building rules.
+    """
+    data = get_structure_data(structure_type)
+
+    # Check max per player limit
+    if data.max_per_player is not None:
+        count = sum(1 for s in existing_structures if s == structure_type)
+        if count >= data.max_per_player:
+            return False
+
+    return True
+
+
+def calculate_town_power(structures: List[StructureType]) -> int:
+    """
+    Calculate the total power value of a group of structures.
+
+    Used for determining if structures form a town (7+ power).
+    """
+    return sum(get_structure_data(s).power_value for s in structures)
+
+
+def is_town(structures: List[StructureType]) -> bool:
+    """
+    Check if a group of connected structures forms a town.
+
+    A town requires connected structures with total power value >= 7.
+
+    Simplified from full Terra Mystica: Not checking for minimum
+    4 structures requirement.
+    """
+    return calculate_town_power(structures) >= 7

@@ -1,304 +1,268 @@
-"""Player module for Terra Mystica.
+"""Player module - manages player state, resources, and faction.
 
-This module defines the Player class which manages a player's state,
-including their faction, resources, structures, and victory points.
+This module implements player management including resources, faction abilities,
+and tracking of player progression in Terra Mystica.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Mapping
+from dataclasses import dataclass
+from enum import Enum, auto
+from typing import TYPE_CHECKING, Self, Protocol, Dict
 
-from .coordinate import Coordinate
-from .core import Resource, PowerBowls
-from .resources import Resources
-from .structures import StructureType
-from .faction import FACTION_ABILITY_MAP
+from .board import TerrainType
+from .resources import Resources, PowerBowls
 
 if TYPE_CHECKING:
-    from .faction import Faction, FactionAbility
-    from .types import StructureSupplyData
+    from .game import Game
+
+
+class FactionType(Enum):
+    """
+    The factions available in the game.
+
+    TYPE: Enum for type-safe faction identification.
+
+    Simplified from full Terra Mystica: Starting with 3 core factions
+    instead of all 14. Each faction has unique abilities and home terrain.
+    """
+
+    # Wasteland factions
+    CHAOS_MAGICIANS = auto()
+    # Mountain factions
+    DWARVES = auto()
+    # Plains factions
+    HALFLINGS = auto()
+
+
+@dataclass
+class FactionData:
+    """
+    Static data about a faction.
+
+    TYPE: Data class bundling faction properties.
+    """
+
+    name: str
+    home_terrain: TerrainType
+    starting_resources: Resources
+    special_ability: str
+    # Simplified: Omitting exchange rates, stronghold abilities, etc.
+
+
+# Faction definitions
+FACTION_DATA: Dict[FactionType, FactionData] = {
+    FactionType.CHAOS_MAGICIANS: FactionData(
+        name="Chaos Magicians",
+        home_terrain=TerrainType.WASTELAND,
+        starting_resources=Resources(
+            workers=4,
+            coins=15,
+            priests=0,
+            power_bowls=PowerBowls((5, 7, 0)),  # 5 in Bowl I, 7 in Bowl II
+        ),
+        special_ability="Can use double spades on one action",
+    ),
+    FactionType.DWARVES: FactionData(
+        name="Dwarves",
+        home_terrain=TerrainType.MOUNTAINS,
+        starting_resources=Resources(
+            workers=3,
+            coins=15,
+            priests=0,
+            power_bowls=PowerBowls((5, 7, 0)),
+        ),
+        special_ability="Tunneling: Can build through mountains",
+    ),
+    FactionType.HALFLINGS: FactionData(
+        name="Halflings",
+        home_terrain=TerrainType.PLAINS,
+        starting_resources=Resources(
+            workers=3,
+            coins=15,
+            priests=0,
+            power_bowls=PowerBowls((5, 7, 0)),
+        ),
+        special_ability="Gain 1 additional spade per spade action",
+    ),
+}
 
 
 class Player:
-    """Encapsulates all state and logic for a single player.
+    """
+    Represents a player in the game.
 
-    PATTERN: Information Expert - manages all player-specific state and operations.
-    PATTERN: Strategy - uses FactionAbility for faction-specific behavior.
+    PATTERN: Part of the Facade pattern - created and managed by Game class.
+    PATTERN: Context for Strategy pattern - holds faction-specific behavior.
+
+    Players should not be instantiated directly by library users.
+    All player interaction happens through the Game facade.
+
+    Simplified from full Terra Mystica:
+    - No favor tiles or bonus cards
+    - Basic terraforming and shipping tracks
+    - Simplified power actions
     """
 
-    _faction: Faction
-    _ability_handler: FactionAbility
+    _game: Game
+    _faction: FactionType
     _resources: Resources
-    _victory_points: int  # Track VP separately from other resources
+    _terraforming_level: int  # 0-3, reduces spade cost
+    _shipping_level: int  # 0-3, allows river crossing
+    _victory_points: int
+    _passed: bool  # Whether player has passed this round
 
-    _structures: dict[Coordinate, StructureType]
-    """DATASTRUCT: Dictionary mapping board coordinates to structure types.
-    
-    This ownership registry tracks all structures built by the player, enabling
-    O(1) lookup for structure queries and ensuring consistent state between
-    the player's records and the board's placement tracking.
-    """
-
-    _structure_supply: dict[StructureType, int]
-    """DATASTRUCT: Dictionary tracking remaining buildable structures.
-    
-    This inventory system enforces the physical component limits of the game,
-    preventing players from building more structures than available. Each
-    structure type has a maximum count that decreases as structures are built.
-    """
-
-    _shipping_level: int  # Ability to cross rivers (0-3)
-    _spade_level: int  # Terraforming efficiency (1-3)
-    _has_passed: bool  # Track if player has passed this round
-
-    def __new__(cls, faction: Faction) -> Player:
-        """Create a new player with the given faction.
-
-        Constructor for Player, for use by Game only.
-
-        PATTERN: Factory Method - Player instances can only be created through
-        Game's factory methods to ensure proper registration and validation.
-
-        Args:
-            faction: The faction this player is playing
-
-        Returns:
-            A new Player instance with faction-specific starting conditions
-
-        Raises:
-            TypeError: If attempting to construct directly outside of Game
+    @classmethod
+    def _create_for_game(cls, game: Game, faction: FactionType) -> Self:
         """
-        # Check if we're allowed to construct
-        from .game import Game
+        Create a player instance for a game.
 
-        if not Game._is_constructing_player():
-            raise TypeError(
-                "Player instances cannot be constructed directly. Use Game constructor."
-            )
+        This is a private factory method only for use by the Game class.
+        """
+        obj = object.__new__(cls)
+        obj._game = game
+        obj._faction = faction
 
-        self = object.__new__(cls)
-        self._faction = faction
-        self._ability_handler = FACTION_ABILITY_MAP[faction]
+        # Initialize with faction starting resources
+        faction_data = FACTION_DATA[faction]
+        obj._resources = faction_data.starting_resources
 
-        # Initialize resources with faction-specific values
-        initial_res = self._ability_handler.initial_resources
-        workers = initial_res.get(Resource.WORKER, 0)
-        coins = initial_res.get(Resource.COIN, 0)
+        # Starting track levels
+        obj._terraforming_level = 0
+        obj._shipping_level = 0
+        obj._victory_points = 20  # Standard starting VP
+        obj._passed = False
 
-        # Create PowerBowls from initial power distribution
-        initial_power_tuple = self._ability_handler.initial_power
-        power_bowls = PowerBowls(
-            bowl_1=initial_power_tuple[0],
-            bowl_2=0,  # All initial power starts in bowls 1 and 3
-            bowl_3=initial_power_tuple[1],
-        )
+        return obj
 
-        self._resources = Resources(workers=workers, coins=coins, power=power_bowls)
-
-        # Track victory points separately
-        self._victory_points = 20  # All players start with 20 VP
-
-        # Initialize structure tracking
-        self._structures = {}  # No structures placed initially
-        self._structure_supply = dict(self._ability_handler.initial_structure_supply)
-
-        # Initialize advancement tracks
-        self._shipping_level = 0  # Start with no shipping ability
-        self._spade_level = 3  # Start at spade level 3 (standard)
-
-        self._has_passed = False
-        return self
-
-    @property
-    def faction(self) -> Faction:
-        """Get the player's faction (read-only)."""
+    def get_faction(self) -> FactionType:
+        """Get the player's faction."""
         return self._faction
 
-    @property
-    def home_terrain(self) -> str:
-        """Get the player's home terrain type."""
-        return self._ability_handler.home_terrain
+    def get_faction_name(self) -> str:
+        """Get the faction's display name."""
+        return FACTION_DATA[self._faction].name
 
-    @property
-    def resources(self) -> Resources:
-        """Get the player's current resources.
+    def get_home_terrain(self) -> TerrainType:
+        """Get the faction's home terrain type."""
+        return FACTION_DATA[self._faction].home_terrain
 
-        Note: Returns the actual Resources object, not a copy.
-        The Resources class itself handles encapsulation.
-        """
+    def get_resources(self) -> Resources:
+        """Get a copy of the player's current resources."""
         return self._resources
 
-    @property
-    def victory_points(self) -> int:
+    def get_victory_points(self) -> int:
         """Get the player's current victory points."""
         return self._victory_points
 
-    @property
-    def shipping_level(self) -> int:
-        """Get the player's current shipping level (0-3)."""
+    def get_terraforming_level(self) -> int:
+        """Get the player's terraforming track level (0-3)."""
+        return self._terraforming_level
+
+    def get_shipping_level(self) -> int:
+        """Get the player's shipping track level (0-3)."""
         return self._shipping_level
 
-    @property
-    def spade_level(self) -> int:
-        """Get the player's current spade level (1-3)."""
-        return self._spade_level
+    def get_spade_cost(self, distance: int) -> Resources:
+        """
+        Calculate the cost to terraform based on distance.
 
-    @property
+        Distance is the number of terrain steps (1-3).
+        Terraforming track reduces the cost.
+        """
+        if distance < 1 or distance > 3:
+            raise ValueError(f"Invalid terraform distance: {distance}")
+
+        # Base cost: 3 workers per spade
+        # Each terraforming level reduces cost by 1 worker
+        workers_per_spade = max(1, 3 - self._terraforming_level)
+        total_workers = workers_per_spade * distance
+
+        return Resources(workers=total_workers)
+
     def has_passed(self) -> bool:
         """Check if the player has passed this round."""
-        return self._has_passed
+        return self._passed
 
-    def get_structure_at(self, location: Coordinate) -> StructureType | None:
-        """Get the structure type at a specific location.
+    def pass_turn(self) -> None:
+        """Mark the player as having passed for this round."""
+        self._passed = True
 
-        Args:
-            location: The coordinate to check
+    def reset_for_new_round(self) -> None:
+        """Reset player state for a new round."""
+        self._passed = False
 
-        Returns:
-            The structure type at that location, or None if empty
+    def spend_resources(self, cost: Resources) -> None:
         """
-        return self._structures.get(location)
+        Spend resources from the player's pool.
 
-    def get_all_structures(self) -> dict[Coordinate, StructureType]:
-        """Get all structures owned by this player.
-
-        Returns:
-            A copy of the structures dictionary to prevent external modification
+        Raises:
+            ValueError: If player cannot afford the cost
         """
-        return self._structures.copy()
+        self._resources = self._resources.subtract(cost)
 
-    def get_structure_supply(self) -> dict[StructureType, int]:
-        """Get the current supply of each structure type.
+    def gain_resources(self, income: Resources) -> None:
+        """Add resources to the player's pool."""
+        self._resources = self._resources.add(income)
 
-        Returns:
-            A copy of the structure supply to prevent external modification
+    def gain_power(self, amount: int) -> None:
         """
-        return self._structure_supply.copy()
+        Gain power tokens following bowl progression rules.
 
-    def get_structure_supply_data(self) -> StructureSupplyData:
-        """Get structure supply as a TypedDict.
-
-        TYPE: Returns StructureSupplyData for type-safe access to counts.
-
-        This method provides a structured view of remaining structures
-        that can be safely used in type-checked code.
-
-        Returns:
-            StructureSupplyData with counts for each structure type
+        Power tokens move from Bowl I → II → III.
         """
-        return StructureSupplyData(
-            dwelling=self._structure_supply.get(StructureType.DWELLING, 0),
-            trading_house=self._structure_supply.get(StructureType.TRADING_HOUSE, 0),
-            temple=self._structure_supply.get(StructureType.TEMPLE, 0),
-            sanctuary=self._structure_supply.get(StructureType.SANCTUARY, 0),
-            stronghold=self._structure_supply.get(StructureType.STRONGHOLD, 0),
-        )
+        self._resources = self._resources.gain_power(amount)
 
-    def add_victory_points(self, points: int) -> None:
-        """Add victory points to the player's total.
-
-        Args:
-            points: Number of points to add (can be negative)
-        """
+    def gain_victory_points(self, points: int) -> None:
+        """Add victory points to the player's total."""
+        if points < 0:
+            raise ValueError(f"Cannot gain negative victory points: {points}")
         self._victory_points += points
 
-    def mark_passed(self) -> None:
-        """Mark this player as having passed for the current round.
-
-        STAGING: Validates player hasn't already passed this round.
-
-        Raises:
-            ValueError: If player has already passed
+    def advance_terraforming(self) -> None:
         """
-        if self._has_passed:
-            raise ValueError("Player has already passed this round")
-        self._has_passed = True
+        Advance on the terraforming track.
 
-    def reset_pass_status(self) -> None:
-        """Reset the pass status for a new round."""
-        self._has_passed = False
-
-    def build_structure(
-        self, location: Coordinate, structure_type: StructureType
-    ) -> None:
-        """Build a structure at the specified location.
-
-        STAGING: Validates no existing structure at location and structure available in supply.
-
-        This method assumes validation (terrain, resources, etc.) has been
-        done by the Game class. It records the placement and updates supply.
-
-        Args:
-            location: Where to build the structure
-            structure_type: Type of structure to build
-
-        Raises:
-            ValueError: If there's already a structure at this location
-            ValueError: If no structures of this type remain in supply
+        Simplified from full Terra Mystica: Just tracks 0-3 levels.
         """
-        if location in self._structures:
-            raise ValueError(f"Already have a structure at {location}")
-
-        if self._structure_supply.get(structure_type, 0) <= 0:
-            raise ValueError(f"No {structure_type.value} left in supply")
-
-        self._structures[location] = structure_type
-        self._structure_supply[structure_type] -= 1
-
-    def upgrade_structure(self, location: Coordinate, new_type: StructureType) -> None:
-        """Upgrade a structure at the specified location.
-
-        STAGING: Validates structure exists at location and new structure type available in supply.
-
-        This method assumes validation (valid upgrade path, resources, etc.)
-        has been done by the Game class. Returns old structure to supply.
-
-        Args:
-            location: Location of the structure to upgrade
-            new_type: The new structure type
-
-        Raises:
-            ValueError: If there's no structure at this location
-            ValueError: If no structures of new type remain in supply
-        """
-        if location not in self._structures:
-            raise ValueError(f"No structure at {location} to upgrade")
-
-        if self._structure_supply.get(new_type, 0) <= 0:
-            raise ValueError(f"No {new_type.value} left in supply")
-
-        # Return old structure to supply
-        old_type = self._structures[location]
-        self._structure_supply[old_type] += 1
-
-        # Place new structure and remove from supply
-        self._structures[location] = new_type
-        self._structure_supply[new_type] -= 1
+        if self._terraforming_level >= 3:
+            raise ValueError("Terraforming already at maximum level")
+        self._terraforming_level += 1
 
     def advance_shipping(self) -> None:
-        """Advance shipping level by 1 (max 3).
+        """
+        Advance on the shipping track.
 
-        STAGING: Validates shipping level not already at maximum (3).
-
-        Raises:
-            ValueError: If already at max shipping level
+        Simplified from full Terra Mystica: Just tracks 0-3 levels.
         """
         if self._shipping_level >= 3:
-            raise ValueError("Already at maximum shipping level")
+            raise ValueError("Shipping already at maximum level")
         self._shipping_level += 1
 
-    def advance_spades(self) -> None:
-        """Advance spade level by 1 (min 1).
-
-        STAGING: Validates spade level not already at minimum (1).
-
-        Raises:
-            ValueError: If already at min spade level
+    def get_income(self) -> Resources:
         """
-        if self._spade_level <= 1:
-            raise ValueError("Already at minimum spade level (most efficient)")
-        self._spade_level -= 1  # Lower number = more efficient
+        Calculate the player's income for the income phase.
 
-    def __repr__(self) -> str:
-        """String representation of the player."""
-        return f"Player(faction={self._faction.value}, vp={self.victory_points}, passed={self._has_passed})"
+        Simplified from full Terra Mystica: Basic income based on
+        structures, no bonus cards or favor tiles.
+        """
+        # Base income
+        workers = 1  # Base worker income
+        coins = 0
+        priests = 0
+        power = 0
+
+        # TODO: Add income from structures on board
+        # Each trading house gives +2 coins
+        # Each temple gives +1 priest
+        # Stronghold gives faction-specific income
+
+        # Create power bowls for income (power starts in bowl I)
+        power_bowls = PowerBowls((power, 0, 0)) if power > 0 else PowerBowls()
+
+        return Resources(
+            workers=workers,
+            coins=coins,
+            priests=priests,
+            power_bowls=power_bowls,
+        )
