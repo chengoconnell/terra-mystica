@@ -28,7 +28,7 @@ def print_player_status(game: Game, player: Player):
     print(f"  Shipping: {player.get_shipping_level()}")
     
     # Show structures
-    structures = game._board.get_structures_of_player(player)
+    structures = game.get_board().get_structures_of_player(player)
     if structures:
         print(f"  Structures: {len(structures)}")
         for coord, struct_type in structures[:3]:  # Show first 3
@@ -40,9 +40,14 @@ def print_player_status(game: Game, player: Player):
 def find_home_terrain_hex(game: Game, player: Player):
     """Find a hex with player's home terrain."""
     home_terrain = player.get_home_terrain()
-    for hex_space in game._board._hexes.values():
-        if hex_space.terrain == home_terrain and not hex_space.is_river and not hex_space.owner:
-            return hex_space.coord
+    board = game.get_board()
+    # Iterate through all coordinates to find a suitable hex
+    for q in range(-2, 3):
+        for r in range(-2, 3):
+            coord = AxialCoord(q, r)
+            hex_space = board.get_hex(coord)
+            if hex_space and hex_space.terrain == home_terrain and not hex_space.is_river and not hex_space.owner:
+                return coord
     return None
 
 
@@ -57,8 +62,11 @@ def simulate_full_game():
     player3 = game.add_player(FactionType.HALFLINGS)
     
     game.start_game()
-    print(f"Game started with {len(game._players)} players")
-    print(f"Current phase: {game._current_phase.name}")
+    print(f"Game started with {len(game.get_players())} players")
+    print(f"Initial phase: {game.get_phase().name}")
+    
+    # The game should now be in ACTIONS phase after processing initial income
+    print(f"Current phase after start: {game.get_phase().name}")
     
     # Round 1
     print_separator("ROUND 1 - INITIAL SETUP")
@@ -96,6 +104,60 @@ def simulate_full_game():
         game.execute_action(player3, build_action)
         print("✅ Dwelling built successfully")
     
+    # TEST CULT ADVANCEMENT AND POWER MILESTONES
+    print_separator("CULT ADVANCEMENT TEST - POWER MILESTONES")
+    cult_board = game.get_cult_board()
+    
+    # Test advancing to milestone positions
+    print("\nTesting cult advancement power milestones:")
+    print("Expected: Space 3=1P, Space 5=2P, Space 7=2P, Space 10=3P")
+    
+    # Player 1 advances on Fire cult
+    print(f"\n{player1.get_faction_name()} on FIRE cult:")
+    initial_power = player1.get_resources().available_power
+    print(f"  Initial power: {initial_power}")
+    
+    # Advance to space 3 (should gain 1 power)
+    power_gained = cult_board.advance_on_cult(player1, CultType.FIRE, 3)
+    new_power = player1.get_resources().available_power
+    print(f"  Advanced to space 3: +{power_gained} power (total: {new_power})")
+    
+    # Advance to space 5 (should gain 2 power)
+    power_gained = cult_board.advance_on_cult(player1, CultType.FIRE, 2)
+    new_power = player1.get_resources().available_power
+    print(f"  Advanced to space 5: +{power_gained} power (total: {new_power})")
+    
+    # Player 2 advances on Water cult to multiple milestones
+    print(f"\n{player2.get_faction_name()} on WATER cult:")
+    initial_power = player2.get_resources().available_power
+    print(f"  Initial power: {initial_power}")
+    
+    # Advance directly to space 7 (should gain 1+2+2 = 5 power)
+    power_gained = cult_board.advance_on_cult(player2, CultType.WATER, 7)
+    new_power = player2.get_resources().available_power
+    print(f"  Advanced to space 7: +{power_gained} power (total: {new_power})")
+    
+    # Player 3 advances to max position
+    print(f"\n{player3.get_faction_name()} on EARTH cult:")
+    initial_power = player3.get_resources().available_power
+    print(f"  Initial power: {initial_power}")
+    
+    # Advance to space 10 (should gain all milestone power: 1+2+2+3 = 8)
+    power_gained = cult_board.advance_on_cult(player3, CultType.EARTH, 10)
+    new_power = player3.get_resources().available_power
+    print(f"  Advanced to space 10 (max): +{power_gained} power (total: {new_power})")
+    
+    # Test multiple players on same space (no pushing)
+    print("\n\nTesting multiple players on same cult space:")
+    print(f"Player 2 advances to Fire 5 (same as Player 1)...")
+    cult_board.advance_on_cult(player2, CultType.FIRE, 5)
+    
+    print("\nFire cult positions:")
+    for player in [player1, player2, player3]:
+        pos = cult_board.get_position(player, CultType.FIRE)
+        print(f"  {player.get_faction_name()}: position {pos}")
+    print("✅ Multiple players can occupy the same space (no pushing)")
+    
     # Continue round with dynamic turn order
     print_separator("CONTINUING ROUND 1 - PLAYERS PASS")
     
@@ -117,7 +179,7 @@ def simulate_full_game():
     cult_board = game.get_cult_board()
     for cult_type in [CultType.FIRE, CultType.WATER, CultType.EARTH, CultType.AIR]:
         print(f"\n{cult_type.name} Track:")
-        for player in game._players:
+        for player in game.get_players():
             pos = cult_board.get_position(player, cult_type)
             print(f"  {player.get_faction_name()}: {pos}")
     
@@ -125,11 +187,11 @@ def simulate_full_game():
     print_separator("END OF ROUND 1")
     
     # Check phase transition
-    print(f"\nCurrent phase: {game._current_phase.name}")
-    print(f"Current round: {game._round_manager._current_round}")
+    print(f"\nCurrent phase: {game.get_phase().name}")
+    print(f"Current round: {game.get_round()}")
     
     # Show income phase
-    if game._current_phase.name == "INCOME":
+    if game.get_phase().name == "INCOME":
         print_separator("INCOME PHASE")
         for player in [player1, player2, player3]:
             print_player_status(game, player)
@@ -137,7 +199,7 @@ def simulate_full_game():
     # Fast forward through remaining rounds
     print_separator("SIMULATING REMAINING ROUNDS")
     round_count = 2
-    while game._current_phase.name != "GAME_END" and round_count <= 6:
+    while game.get_phase().name != "GAME_END" and round_count <= 6:
         print(f"\nRound {round_count}...")
         
         # Each player takes one action then passes
@@ -166,9 +228,9 @@ def simulate_full_game():
     
     # Final game state
     print_separator("GAME END - FINAL SCORES")
-    print(f"Final phase: {game._current_phase.name}")
+    print(f"Final phase: {game.get_phase().name}")
     
-    if game._current_phase.name == "GAME_END":
+    if game.get_phase().name == "GAME_END":
         print("\n🏆 FINAL VICTORY POINTS:")
         scores = []
         for player in [player1, player2, player3]:
@@ -177,14 +239,14 @@ def simulate_full_game():
             print(f"{player.get_faction_name()}: {vp} VP")
             
             # Show scoring breakdown
-            structures = game._board.get_structures_of_player(player)
+            structures = game.get_board().get_structures_of_player(player)
             print(f"  - Structures built: {len(structures)}")
             
             # Show cult positions
-            for track in CultTrack:
-                positions = game._cult_board.get_track_positions(track)
-                if player._index in positions:
-                    print(f"  - {track.name} cult: position {positions[player._index]}")
+            cult_positions = game.get_cult_board().get_all_positions(player)
+            for cult_type, position in cult_positions.items():
+                if position > 0:
+                    print(f"  - {cult_type.name} cult: position {position}")
         
         # Determine winner (Game class doesn't provide this functionality)
         # In a real game, you might have tiebreaker rules here

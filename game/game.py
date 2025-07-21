@@ -60,14 +60,14 @@ class Game:
             game.execute_action(current, action)
     """
 
-    _player_count: int
-    _players: list[Player]
-    _board: Board | None
-    _round_manager: RoundManager | None
-    _cult_board: CultBoard | None
-    _current_phase: GamePhase
-    _is_started: bool
-    _used_factions: set[FactionType]
+    __player_count: int
+    __players: list[Player]
+    __board: Board | None
+    __round_manager: RoundManager | None
+    __cult_board: CultBoard | None
+    __current_phase: GamePhase
+    __is_started: bool
+    __used_factions: set[FactionType]
 
     def __new__(cls, player_count: int) -> Self:
         """
@@ -83,14 +83,14 @@ class Game:
             raise ValueError(f"Player count must be 2-4, got {player_count}")
 
         obj = object.__new__(cls)
-        obj._player_count = player_count
-        obj._players = []
-        obj._board = None
-        obj._round_manager = None
-        obj._cult_board = None
-        obj._current_phase = GamePhase.SETUP
-        obj._is_started = False
-        obj._used_factions = set()
+        obj.__player_count = player_count
+        obj.__players = []
+        obj.__board = None
+        obj.__round_manager = None
+        obj.__cult_board = None
+        obj.__current_phase = GamePhase.SETUP
+        obj.__is_started = False
+        obj.__used_factions = set()
         return obj
 
     # Factory methods for creating game components
@@ -110,21 +110,21 @@ class Game:
         Raises:
             ValueError: If game already started, too many players, or faction already taken
         """
-        if self._is_started:
+        if self.__is_started:
             raise ValueError("Cannot add players after game has started")
 
-        if len(self._players) >= self._player_count:
-            raise ValueError(f"Game already has {self._player_count} players")
+        if len(self.__players) >= self.__player_count:
+            raise ValueError(f"Game already has {self.__player_count} players")
 
-        if faction in self._used_factions:
+        if faction in self.__used_factions:
             raise ValueError(f"Faction {faction.name} is already taken")
 
         # Lazy import to avoid circular dependency
         from .player import Player
 
         player = Player._create_for_game(self, faction)
-        self._players.append(player)
-        self._used_factions.add(faction)
+        self.__players.append(player)
+        self.__used_factions.add(faction)
 
         return player
 
@@ -140,29 +140,33 @@ class Game:
         Raises:
             ValueError: If incorrect number of players or game already started
         """
-        if self._is_started:
+        if self.__is_started:
             raise ValueError("Game has already started")
 
-        if len(self._players) != self._player_count:
+        if len(self.__players) != self.__player_count:
             raise ValueError(
-                f"Expected {self._player_count} players, "
-                f"but only {len(self._players)} have been added"
+                f"Game requires {self.__player_count} players "
+                f"but only {len(self.__players)} have been added"
             )
 
         # Initialize game components
         from .board import Board
-        from .cults import CultBoard
+        from .cults import CultBoard, PowerMilestoneObserver
         from .rounds import RoundManager
 
-        self._board = Board._create_for_game(self)
-        self._cult_board = CultBoard(self)
-        self._round_manager = RoundManager._create_for_game(self, self._players)
+        self.__board = Board._create_for_game(self)
+        self.__cult_board = CultBoard(self)
+        self.__round_manager = RoundManager._create_for_game(self, self.__players)
 
-        self._is_started = True
-        self._current_phase = GamePhase.INCOME
+        # Attach cult observers
+        power_observer = PowerMilestoneObserver()
+        self.__cult_board.attach(power_observer)
+
+        self.__is_started = True
+        self.__current_phase = GamePhase.INCOME
 
         # Process initial income phase
-        self._round_manager._process_income_phase()
+        self.__round_manager._process_income_phase()
 
     def execute_action(self, player: Player, action: Action) -> None:
         """
@@ -178,13 +182,13 @@ class Game:
             ValueError: If not in action phase or not player's turn
             Exception: Any validation errors from the action
         """
-        if self._current_phase != GamePhase.ACTIONS:
+        if self.__current_phase != GamePhase.ACTIONS:
             raise ValueError("Actions can only be taken during the action phase")
 
-        if not self._round_manager:
+        if not self.__round_manager:
             raise ValueError("Game has not started")
 
-        current = self._round_manager.get_current_player()
+        current = self.__round_manager.get_current_player()
         if current != player:
             raise ValueError("Not this player's turn")
 
@@ -193,7 +197,7 @@ class Game:
         action.execute(self, player)
 
         # Advance to next player
-        self._round_manager.advance_turn()
+        self.__round_manager.advance_turn()
 
     def pass_turn(self, player: Player) -> None:
         """
@@ -205,13 +209,13 @@ class Game:
         Raises:
             ValueError: If not player's turn or not in action phase
         """
-        if self._current_phase != GamePhase.ACTIONS:
+        if self.__current_phase != GamePhase.ACTIONS:
             raise ValueError("Can only pass during action phase")
 
-        if not self._round_manager:
+        if not self.__round_manager:
             raise ValueError("Game has not started")
 
-        self._round_manager.player_pass(player)
+        self.__round_manager.player_pass(player)
 
         # Phase advancement is handled automatically by RoundManager
         pass
@@ -220,27 +224,31 @@ class Game:
 
     def get_current_player(self) -> Player | None:
         """Get the player whose turn it is, or None if not in action phase."""
-        if self._current_phase != GamePhase.ACTIONS or not self._round_manager:
+        if self.__current_phase != GamePhase.ACTIONS or not self.__round_manager:
             return None
-        return self._round_manager.get_current_player()
+        return self.__round_manager.get_current_player()
 
     def get_round(self) -> int:
         """Get the current round number (1-6)."""
-        if not self._round_manager:
+        if not self.__round_manager:
             return 0
-        return self._round_manager.get_current_round()
+        return self.__round_manager.get_current_round()
 
     def get_phase(self) -> GamePhase:
         """Get the current game phase."""
-        return self._current_phase
+        return self.__current_phase
+
+    def _set_phase(self, phase: GamePhase) -> None:
+        """Set the current game phase (internal use only)."""
+        self.__current_phase = phase
 
     def is_started(self) -> bool:
         """Check if the game has started."""
-        return self._is_started
+        return self.__is_started
 
     def is_finished(self) -> bool:
         """Check if the game has ended."""
-        return self._current_phase == GamePhase.GAME_END
+        return self.__current_phase == GamePhase.GAME_END
 
     # Component access methods
 
@@ -251,9 +259,9 @@ class Game:
         Raises:
             ValueError: If game has not started
         """
-        if not self._board:
+        if not self.__board:
             raise ValueError("Board not available until game starts")
-        return self._board
+        return self.__board
 
     def get_cult_board(self) -> CultBoard:
         """
@@ -262,13 +270,23 @@ class Game:
         Raises:
             ValueError: If game has not started
         """
-        if not self._cult_board:
+        if not self.__cult_board:
             raise ValueError("Cult board not available until game starts")
-        return self._cult_board
+        return self.__cult_board
+
+    def get_round_manager(self) -> RoundManager:
+        """
+        Get the round manager.
+
+        Raises:
+            ValueError: If game has not started
+        """
+        if not self.__is_started:
+            raise ValueError("Round manager not available until game starts")
+        return self.__round_manager
 
     def get_players(self) -> list[Player]:
         """Get all players in the game."""
-        return self._players.copy()
+        return self.__players.copy()
 
     # Private helper methods
-

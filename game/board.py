@@ -90,8 +90,8 @@ class Board:
     - No pre-printed structures or special spaces
     """
 
-    _game: Game
-    _hexes: Dict[AxialCoord, Hex]
+    __game: Game
+    __hexes: Dict[AxialCoord, Hex]
 
     @classmethod
     def _create_for_game(cls, game: Game) -> Self:
@@ -101,8 +101,8 @@ class Board:
         This is a private factory method only for use by the Game class.
         """
         obj = object.__new__(cls)
-        obj._game = game
-        obj._hexes = {}
+        obj.__game = game
+        obj.__hexes = {}
         obj._initialize_board()
         return obj
 
@@ -126,7 +126,7 @@ class Board:
                 # Mark some hexes as rivers (simplified pattern)
                 is_river = (q + r) % 5 == 0 and abs(q) + abs(r) > 1
 
-                self._hexes[coord] = Hex(
+                self.__hexes[coord] = Hex(
                     coord=coord, terrain=terrain, is_river=is_river
                 )
 
@@ -143,11 +143,11 @@ class Board:
 
     def get_hex(self, coord: AxialCoord) -> Optional[Hex]:
         """Get the hex at the given coordinate, or None if out of bounds."""
-        return self._hexes.get(coord)
+        return self.__hexes.get(coord)
 
     def get_all_hexes(self) -> List[Hex]:
         """Get all hexes on the board."""
-        return list(self._hexes.values())
+        return list(self.__hexes.values())
 
     def get_adjacent_hexes(self, coord: AxialCoord) -> List[Hex]:
         """
@@ -248,7 +248,7 @@ class Board:
     ) -> List[Tuple[AxialCoord, StructureType]]:
         """Get all structures owned by a player."""
         structures = []
-        for hex_space in self._hexes.values():
+        for hex_space in self.__hexes.values():
             if hex_space.owner == player and hex_space.structure:
                 structures.append((hex_space.coord, hex_space.structure))
         return structures

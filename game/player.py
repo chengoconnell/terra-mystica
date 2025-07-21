@@ -104,13 +104,13 @@ class Player:
     - Simplified power actions
     """
 
-    _game: Game
-    _faction: FactionType
-    _resources: Resources
-    _terraforming_level: int  # 0-3, reduces spade cost
-    _shipping_level: int  # 0-3, allows river crossing
-    _victory_points: int
-    _passed: bool  # Whether player has passed this round
+    __game: Game
+    __faction: FactionType
+    __resources: Resources
+    __terraforming_level: int  # 0-3, reduces spade cost
+    __shipping_level: int  # 0-3, allows river crossing
+    __victory_points: int
+    __passed: bool  # Whether player has passed this round
 
     @classmethod
     def _create_for_game(cls, game: Game, faction: FactionType) -> Self:
@@ -120,48 +120,48 @@ class Player:
         This is a private factory method only for use by the Game class.
         """
         obj = object.__new__(cls)
-        obj._game = game
-        obj._faction = faction
+        obj.__game = game
+        obj.__faction = faction
 
         # Initialize with faction starting resources
         faction_data = FACTION_DATA[faction]
-        obj._resources = faction_data.starting_resources
+        obj.__resources = faction_data.starting_resources
 
         # Starting track levels
-        obj._terraforming_level = 0
-        obj._shipping_level = 0
-        obj._victory_points = 20  # Standard starting VP
-        obj._passed = False
+        obj.__terraforming_level = 0
+        obj.__shipping_level = 0
+        obj.__victory_points = 20  # Standard starting VP
+        obj.__passed = False
 
         return obj
 
     def get_faction(self) -> FactionType:
         """Get the player's faction."""
-        return self._faction
+        return self.__faction
 
     def get_faction_name(self) -> str:
         """Get the faction's display name."""
-        return FACTION_DATA[self._faction].name
+        return FACTION_DATA[self.__faction].name
 
     def get_home_terrain(self) -> TerrainType:
         """Get the faction's home terrain type."""
-        return FACTION_DATA[self._faction].home_terrain
+        return FACTION_DATA[self.__faction].home_terrain
 
     def get_resources(self) -> Resources:
         """Get a copy of the player's current resources."""
-        return self._resources
+        return self.__resources
 
     def get_victory_points(self) -> int:
         """Get the player's current victory points."""
-        return self._victory_points
+        return self.__victory_points
 
     def get_terraforming_level(self) -> int:
         """Get the player's terraforming track level (0-3)."""
-        return self._terraforming_level
+        return self.__terraforming_level
 
     def get_shipping_level(self) -> int:
         """Get the player's shipping track level (0-3)."""
-        return self._shipping_level
+        return self.__shipping_level
 
     def get_spade_cost(self, distance: int) -> Resources:
         """
@@ -175,22 +175,22 @@ class Player:
 
         # Base cost: 3 workers per spade
         # Each terraforming level reduces cost by 1 worker
-        workers_per_spade = max(1, 3 - self._terraforming_level)
+        workers_per_spade = max(1, 3 - self.__terraforming_level)
         total_workers = workers_per_spade * distance
 
         return Resources(workers=total_workers)
 
     def has_passed(self) -> bool:
         """Check if the player has passed this round."""
-        return self._passed
+        return self.__passed
 
     def pass_turn(self) -> None:
         """Mark the player as having passed for this round."""
-        self._passed = True
+        self.__passed = True
 
     def reset_for_new_round(self) -> None:
         """Reset player state for a new round."""
-        self._passed = False
+        self.__passed = False
 
     def spend_resources(self, cost: Resources) -> None:
         """
@@ -199,11 +199,11 @@ class Player:
         Raises:
             ValueError: If player cannot afford the cost
         """
-        self._resources = self._resources.subtract(cost)
+        self.__resources = self.__resources.subtract(cost)
 
     def gain_resources(self, income: Resources) -> None:
         """Add resources to the player's pool."""
-        self._resources = self._resources.add(income)
+        self.__resources = self.__resources.add(income)
 
     def gain_power(self, amount: int) -> None:
         """
@@ -211,13 +211,13 @@ class Player:
 
         Power tokens move from Bowl I → II → III.
         """
-        self._resources = self._resources.gain_power(amount)
+        self.__resources = self.__resources.gain_power(amount)
 
     def gain_victory_points(self, points: int) -> None:
         """Add victory points to the player's total."""
         if points < 0:
             raise ValueError(f"Cannot gain negative victory points: {points}")
-        self._victory_points += points
+        self.__victory_points += points
 
     def advance_terraforming(self) -> None:
         """
@@ -225,9 +225,9 @@ class Player:
 
         Simplified from full Terra Mystica: Just tracks 0-3 levels.
         """
-        if self._terraforming_level >= 3:
+        if self.__terraforming_level >= 3:
             raise ValueError("Terraforming already at maximum level")
-        self._terraforming_level += 1
+        self.__terraforming_level += 1
 
     def advance_shipping(self) -> None:
         """
@@ -235,9 +235,9 @@ class Player:
 
         Simplified from full Terra Mystica: Just tracks 0-3 levels.
         """
-        if self._shipping_level >= 3:
+        if self.__shipping_level >= 3:
             raise ValueError("Shipping already at maximum level")
-        self._shipping_level += 1
+        self.__shipping_level += 1
 
     def get_income(self) -> Resources:
         """

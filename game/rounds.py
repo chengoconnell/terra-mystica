@@ -70,51 +70,51 @@ class TurnOrder:
     - No first player determination via bidding
     """
 
-    __slots__ = ("_active_players", "_passed_players", "_current_index")
-
-    _active_players: List[Player]
-    _passed_players: List[Player]
-    _current_index: int
+    __active_players: List[Player]
+    __passed_players: List[Player]
+    __current_index: int
 
     def __new__(cls, players: List[Player]) -> TurnOrder:
         """Create a new turn order."""
         instance = super().__new__(cls)
-        instance._active_players = players.copy()
-        instance._passed_players = []
-        instance._current_index = 0
+        instance.__active_players = players.copy()
+        instance.__passed_players = []
+        instance.__current_index = 0
         return instance
 
     def get_current_player(self) -> Optional[Player]:
         """Get the current active player."""
-        if not self._active_players:
+        if not self.__active_players:
             return None
-        return self._active_players[self._current_index]
+        return self.__active_players[self.__current_index]
 
     def advance_turn(self) -> None:
         """Move to the next player in turn order."""
-        if self._active_players:
-            self._current_index = (self._current_index + 1) % len(self._active_players)
+        if self.__active_players:
+            self.__current_index = (self.__current_index + 1) % len(
+                self.__active_players
+            )
 
     def player_pass(self, player: Player) -> None:
         """Mark a player as having passed."""
-        if player in self._active_players:
-            self._active_players.remove(player)
-            self._passed_players.append(player)
+        if player in self.__active_players:
+            self.__active_players.remove(player)
+            self.__passed_players.append(player)
 
             # Adjust current index if needed
             if (
-                self._current_index >= len(self._active_players)
-                and self._active_players
+                self.__current_index >= len(self.__active_players)
+                and self.__active_players
             ):
-                self._current_index = 0
+                self.__current_index = 0
 
     def all_passed(self) -> bool:
         """Check if all players have passed."""
-        return len(self._active_players) == 0
+        return len(self.__active_players) == 0
 
     def get_new_turn_order(self) -> List[Player]:
         """Get the turn order for the next round. Players who passed earlier go first."""
-        return self._passed_players + self._active_players
+        return self.__passed_players + self.__active_players
 
 
 class RoundManager:
@@ -125,95 +125,86 @@ class RoundManager:
     PATTERN: Template Method - Defines round structure with phase hooks.
     """
 
-    __slots__ = (
-        "_game",
-        "_players",
-        "_current_round",
-        "_turn_order",
-        "_round_bonuses",
-        "_max_rounds",
-    )
-
-    _game: Game
-    _players: List[Player]
-    _current_round: int
-    _turn_order: TurnOrder
-    _round_bonuses: List[RoundBonus]
-    _max_rounds: int
+    __game: Game
+    __players: List[Player]
+    __current_round: int
+    __turn_order: TurnOrder
+    __round_bonuses: List[RoundBonus]
+    __max_rounds: int
 
     @classmethod
     def _create_for_game(cls, game: Game, players: List[Player]) -> Self:
         """Create a round manager instance. Private factory method for Game class."""
         obj = object.__new__(cls)
-        obj._game = game
-        obj._players = players
-        obj._current_round = 1
-        obj._turn_order = TurnOrder(players)
-        obj._round_bonuses = ROUND_BONUSES.copy()
-        obj._max_rounds = 6
+        obj.__game = game
+        obj.__players = players.copy()
+        obj.__current_round = 1
+        obj.__turn_order = TurnOrder(players)
+        obj.__round_bonuses = ROUND_BONUSES.copy()
+        obj.__max_rounds = 6
         return obj
 
     def get_current_player(self) -> Optional[Player]:
         """Get the current active player."""
-        return self._turn_order.get_current_player()
+        return self.__turn_order.get_current_player()
 
     def get_current_round(self) -> int:
         """Get the current round number."""
-        return self._current_round
+        return self.__current_round
 
     def get_round_bonus(self) -> Optional[RoundBonus]:
         """Get the bonus scoring for the current round."""
-        if 1 <= self._current_round <= len(self._round_bonuses):
-            return self._round_bonuses[self._current_round - 1]
+        if 1 <= self.__current_round <= len(self.__round_bonuses):
+            return self.__round_bonuses[self.__current_round - 1]
         return None
 
     def player_pass(self, player: Player) -> None:
         """Handle a player passing."""
-        self._turn_order.player_pass(player)
+        self.__turn_order.player_pass(player)
 
         # If all players have passed, advance to next phase
-        if self._turn_order.all_passed():
+        if self.__turn_order.all_passed():
             self._advance_phase()
 
     def advance_turn(self) -> None:
         """Move to the next player's turn."""
-        self._turn_order.advance_turn()
+        self.__turn_order.advance_turn()
 
     def _advance_phase(self) -> None:
         """Advance to the next game phase: Income -> Actions -> Cult Bonuses -> (next round)"""
         from .game import GamePhase
 
-        current = self._game._current_phase
+        current = self.__game.get_phase()
 
         if current == GamePhase.INCOME:
-            self._game._current_phase = GamePhase.ACTIONS
+            self.__game._set_phase(GamePhase.ACTIONS)
             # Reset turn order for action phase
-            players_order = self._turn_order.get_new_turn_order()
-            self._turn_order = TurnOrder(players_order)
+            players_order = self.__turn_order.get_new_turn_order()
+            self.__turn_order = TurnOrder(players_order)
             # Reset player pass status
-            for player in self._players:
+            for player in self.__players:
                 player.reset_for_new_round()
 
         elif current == GamePhase.ACTIONS:
             # Round scoring removed for simplification
-            self._game._current_phase = GamePhase.CULT_BONUS
+            self.__game._set_phase(GamePhase.CULT_BONUS)
             # Automatically advance from CULT_BONUS phase
             self._advance_phase()
 
         elif current == GamePhase.CULT_BONUS:
             # Advance to next round or end game
-            if self._current_round < self._max_rounds:
-                self._current_round += 1
-                self._game._current_phase = GamePhase.INCOME
+            if self.__current_round < self.__max_rounds:
+                self.__current_round += 1
+                self.__game._set_phase(GamePhase.INCOME)
                 # Process income phase
                 self._process_income_phase()
             else:
-                self._game._current_phase = GamePhase.GAME_END
+                self.__game._set_phase(GamePhase.GAME_END)
                 self._process_end_game()
 
     def _process_income_phase(self) -> None:
         """Process income phase for all players."""
-        for player in self._players:
+        for player in self.__players:
             income = player.get_income()
             # Convert income to resources
             resources = Resources(
@@ -223,27 +214,27 @@ class RoundManager:
                 power_bowls=PowerBowls(),  # Default power bowls, will use gain() for power income
             )
             player.gain_resources(resources)
-        
+
         # Automatically advance to ACTIONS phase after income distribution
         self._advance_phase()
 
     def _process_end_game(self) -> None:
         """Process end game scoring: cult tracks, largest area, and leftover coins."""
         # Cult track final scoring
-        if self._game._cult_board:
-            cult_scoring = self._game._cult_board.calculate_end_game_scoring()
+        if self.__game.get_cult_board():
+            cult_scoring = self.__game.get_cult_board().calculate_end_game_scoring()
             for player, vp in cult_scoring.items():
                 player.gain_victory_points(vp)
 
         # Largest connected area scoring
-        if self._game._board:
-            for player in self._players:
-                area_size = self._game._board.calculate_largest_area(player)
+        if self.__game.get_board():
+            for player in self.__players:
+                area_size = self.__game.get_board().calculate_largest_area(player)
                 # 3 VP per structure in largest area
                 player.gain_victory_points(area_size * 3)
 
-        # Leftover coins scoring: 1 VP per 3 coins
-        for player in self._players:
+        # Score leftover coins: 1 VP per 3 coins
+        for player in self.__players:
             coins = player.get_resources().coins
             coin_vp = coins // 3
             if coin_vp > 0:
@@ -251,4 +242,4 @@ class RoundManager:
 
     def is_game_over(self) -> bool:
         """Check if the game has ended."""
-        return self._current_round > self._max_rounds
+        return self.__current_round > self.__max_rounds

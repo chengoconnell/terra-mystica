@@ -46,13 +46,11 @@ class BaseAction(ABC):
     def validate(self, game: Game, player: Player) -> None:
         """Common validation for all actions."""
         # Check game state
-        if game._current_phase.name != "ACTIONS":
+        if game.get_phase().name != "ACTIONS":
             raise ValueError("Actions can only be taken during action phase")
 
         # Check if it's this player's turn
-        current = (
-            game._round_manager.get_current_player() if game._round_manager else None
-        )
+        current = game.get_current_player()
         if current != player:
             raise ValueError("Not this player's turn")
 
@@ -85,10 +83,8 @@ class PassAction(BaseAction):
     def execute(self, game: Game, player: Player) -> None:
         """Mark the player as having passed."""
         player.pass_turn()
-
-        # Advance to next player
-        if game._round_manager:
-            game._round_manager.player_pass(player)
+        # Notify the round manager to check if all players have passed
+        game.get_round_manager().player_pass(player)
 
     def describe(self) -> str:
         """Describe the pass action."""
@@ -104,9 +100,7 @@ class BuildAction(BaseAction):
 
     def _validate_specific(self, game: Game, player: Player) -> None:
         """Validate the build action."""
-        board = game._board
-        if not board:
-            raise ValueError("Game board not initialized")
+        board = game.get_board()
 
         # Get the hex
         hex_space = board.get_hex(self.coord)
@@ -159,20 +153,21 @@ class BuildAction(BaseAction):
         player.spend_resources(cost)
 
         # Place structure
-        if game._board:
-            game._board.place_structure(self.coord, player, self.structure_type)
+        board = game.get_board()
+        board.place_structure(self.coord, player, self.structure_type)
 
         # Award victory points
         player.gain_victory_points(data.victory_points)
 
         # Grant cult advancement based on terrain type
-        if game._cult_board and game._board:
-            hex_space = game._board.get_hex(self.coord)
+        cult_board = game.get_cult_board()
+        if cult_board:
+            hex_space = board.get_hex(self.coord)
             if hex_space:
                 # Map terrain types to cult types (simplified)
                 from .board import TerrainType
                 from .cults import CultType
-                
+
                 terrain_cult_map = {
                     TerrainType.PLAINS: CultType.AIR,
                     TerrainType.SWAMP: CultType.WATER,
@@ -180,16 +175,16 @@ class BuildAction(BaseAction):
                     TerrainType.MOUNTAINS: CultType.FIRE,
                     TerrainType.DESERT: CultType.FIRE,
                     TerrainType.LAKES: CultType.WATER,
-                    TerrainType.WASTELAND: CultType.EARTH
+                    TerrainType.WASTELAND: CultType.EARTH,
                 }
-                
+
                 cult_type = terrain_cult_map.get(hex_space.terrain)
                 if cult_type:
                     # Dwellings grant 1 step, other structures grant 2
                     steps = 1 if self.structure_type == StructureType.DWELLING else 2
-                    vp_gained, pushed = game._cult_board.advance_on_cult(player, cult_type, steps)
-                    if vp_gained > 0:
-                        player.gain_victory_points(vp_gained)
+                    power_gained = cult_board.advance_on_cult(player, cult_type, steps)
+                    # Power is granted by the observer, no need to handle it here
+                    # VP for cult tracks is only awarded at end-game
 
     def describe(self) -> str:
         """Describe the build action."""
@@ -207,9 +202,7 @@ class TerraformAction(BaseAction):
 
     def _validate_specific(self, game: Game, player: Player) -> None:
         """Validate the terraform action."""
-        board = game._board
-        if not board:
-            raise ValueError("Game board not initialized")
+        board = game.get_board()
 
         # Get the hex
         hex_space = board.get_hex(self.coord)
@@ -234,7 +227,9 @@ class TerraformAction(BaseAction):
             raise ValueError("Must have at least one structure to terraform")
 
         # For terraforming, only check direct adjacency (no shipping)
-        if not board.is_hex_reachable_by_player(self.coord, player, include_shipping=False):
+        if not board.is_hex_reachable_by_player(
+            self.coord, player, include_shipping=False
+        ):
             raise ValueError("Can only terraform hexes adjacent to your structures")
 
         # Check resources (spade cost)
@@ -269,9 +264,7 @@ class TerraformAction(BaseAction):
 
     def execute(self, game: Game, player: Player) -> None:
         """Execute the terraform action."""
-        board = game._board
-        if not board:
-            return
+        board = game.get_board()
 
         hex_space = board.get_hex(self.coord)
         if not hex_space:
