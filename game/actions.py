@@ -1,287 +1,450 @@
-"""Actions module - game actions using Command pattern.
-
-This module implements the various actions players can take in Terra Mystica,
-encapsulating game rules and validation logic.
-"""
-
 from __future__ import annotations
+from typing import TYPE_CHECKING, ClassVar, Self, cast
+from contextlib import contextmanager
+from collections.abc import Iterator
 
-from abc import ABC, abstractmethod
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol, Optional
-
-from .structures import StructureType
+from .coords import HexCoord
+from .types import (
+    BUILDING_COSTS,
+    FACTION_HOME_TERRAIN,
+    POWER_ACTION_COSTS,
+    TERRAIN_CYCLE,
+    ActionExecutor,
+    BuildAction,
+    BuildingType,
+    GameAction,
+    Name,
+    PassAction,
+    Position,
+    PowerAction,
+    PowerActionType,
+    ResourceCost,
+    TerrainType,
+    TransformAction,
+)
 
 if TYPE_CHECKING:
-    from .board import AxialCoord, TerrainType
+    from .board import Board
     from .game import Game
     from .player import Player
 
 
-class Action(Protocol):
+class ActionBuilder:
     """
-    PATTERN: Command - Encapsulates game actions
-    TYPE: Protocol defining action interface.
-    """
-
-    def validate(self, game: Game, player: Player) -> None:
-        """Validate action. Raises ValueError if invalid."""
-        ...
-
-    def execute(self, game: Game, player: Player) -> None:
-        """Execute action, modifying game state."""
-        ...
-
-    def describe(self) -> str:
-        """Get a human-readable description of this action."""
-        ...
-
-
-class BaseAction(ABC):
-    """
-    Abstract base class for actions.
-    PATTERN: Template Method - Common validation with hooks.
+    PATTERN: Fluent interface for action construction and method
+    Provides a user-friendly API for executing game actions.
     """
 
-    def validate(self, game: Game, player: Player) -> None:
-        """Common validation for all actions."""
-        # Check game state
-        if game.get_phase().name != "ACTIONS":
-            raise ValueError("Actions can only be taken during action phase")
+    __is_constructing: ClassVar[bool] = False
 
-        # Check if it's this player's turn
-        current = game.get_current_player()
-        if current != player:
-            raise ValueError("Not this player's turn")
+    @staticmethod
+    def _is_constructing() -> bool:
+        """Check if builder is being constructed by Game."""
+        return ActionBuilder.__is_constructing
 
-        # Check if player has passed
-        if player.has_passed():
-            raise ValueError("Player has already passed this round")
+    @staticmethod
+    @contextmanager
+    def _constructing_builder() -> Iterator[None]:
+        """Context manager for construction control."""
+        assert not ActionBuilder.__is_constructing
+        ActionBuilder.__is_constructing = True
+        try:
+            yield None
+        finally:
+            ActionBuilder.__is_constructing = False
 
-        # Subclass-specific validation
-        self._validate_specific(game, player)
+    __game: Game
+    __player: Name
 
-    @abstractmethod
-    def _validate_specific(self, game: Game, player: Player) -> None:
-        """Subclass-specific validation logic."""
-        ...
+    def __new__(cls, game: Game, player: Name) -> Self:
+        """
+        Constructor for ActionBuilder, only callable by Game.
 
-    @abstractmethod
-    def execute(self, game: Game, player: Player) -> None:
-        """Execute the action."""
-        ...
+        PATTERN: Controlled construction
+        """
+        if not cls._is_constructing():
+            raise TypeError("ActionBuilder cannot be constructed directly")
 
+        self = super().__new__(cls)
+        self.__game = game
+        self.__player = player
+        return self
 
-@dataclass
-class PassAction(BaseAction):
-    """Action to pass for the round."""
+    def transform(self, q: int, r: int, to_terrain: str) -> None:
+        """
+        Transform terrain at the given position.
 
-    def _validate_specific(self, game: Game, player: Player) -> None:
-        """No additional validation needed for passing."""
-        pass
+        :param q: Hex coordinate q component
+        :param r: Hex coordinate r component
+        :param to_terrain: Target terrain type name
+        :raises ValueError: if transformation is invalid
+        """
+        try:
+            terrain_type = TerrainType(to_terrain)
+        except ValueError:
+            raise ValueError(f"Invalid terrain type: {to_terrain}") from None
 
-    def execute(self, game: Game, player: Player) -> None:
-        """Mark the player as having passed."""
-        player.pass_turn()
-        # Notify the round manager to check if all players have passed
-        game.get_round_manager().player_pass(player)
+        action: TransformAction = {
+            "action": "transform",
+            "player": self.__player,
+            "position": (q, r),
+            "target_terrain": terrain_type,
+        }
+        self.__game.execute_action(action)
 
-    def describe(self) -> str:
-        """Describe the pass action."""
-        return "Pass for the rest of the round"
+    def build(self, q: int, r: int, building: str = "dwelling") -> None:
+        """
+        Build a structure at the given position.
 
+        :param q: Hex coordinate q component
+        :param r: Hex coordinate r component
+        :param building: Building type name (default: "dwelling")
+        :raises ValueError: if building placement is invalid
+        """
+        try:
+            building_type = BuildingType(building)
+        except ValueError:
+            raise ValueError(f"Invalid building type: {building}") from None
 
-@dataclass
-class BuildAction(BaseAction):
-    """Build structure action."""
+        action: BuildAction = {
+            "action": "build",
+            "player": self.__player,
+            "position": (q, r),
+            "building_type": building_type,
+        }
+        self.__game.execute_action(action)
 
-    coord: AxialCoord
-    structure_type: StructureType
+    def use_power(self, power_action: str) -> None:
+        """
+        Execute a power action.
 
-    def _validate_specific(self, game: Game, player: Player) -> None:
-        """Validate the build action."""
-        board = game.get_board()
+        :param power_action: Power action type name
+        :raises ValueError: if power action is invalid
+        """
+        try:
+            power_type = PowerActionType(power_action)
+        except ValueError:
+            raise ValueError(f"Invalid power action: {power_action}") from None
 
-        # Get the hex
-        hex_space = board.get_hex(self.coord)
-        if not hex_space:
-            raise ValueError(f"Invalid coordinate: {self.coord}")
+        action: PowerAction = {
+            "action": "power",
+            "player": self.__player,
+            "power_action": power_type,
+        }
+        self.__game.execute_action(action)
 
-        # Check terrain is player's home terrain
-        if hex_space.terrain != player.get_home_terrain():
-            raise ValueError(
-                f"Can only build on home terrain {player.get_home_terrain()}, "
-                f"but hex is {hex_space.terrain}"
-            )
-
-        # Check hex is empty
-        if hex_space.owner is not None:
-            raise ValueError("Hex already occupied")
-
-        # For non-dwelling structures, check upgrade path
-        from .structures import StructureType as ST
-
-        if self.structure_type != ST.DWELLING:
-            raise ValueError(
-                "Can only build dwellings directly. "
-                "Other structures must be upgraded from existing buildings."
-            )
-
-        # Check adjacency to existing structures
-        player_structures = board.get_structures_of_player(player)
-        if player_structures:  # If player has structures, must be adjacent
-            if not board.is_hex_reachable_by_player(self.coord, player):
-                raise ValueError(
-                    "New structures must be adjacent to existing structures "
-                    "(directly or via shipping)"
-                )
-
-        # Check resources
-        from .structures import get_structure_data
-
-        cost = get_structure_data(self.structure_type).base_cost
-        if not player.get_resources().can_afford(cost):
-            raise ValueError(f"Cannot afford structure: need {cost}")
-
-    def execute(self, game: Game, player: Player) -> None:
-        """Execute the build action."""
-        # Spend resources
-        from .structures import get_structure_data
-
-        data = get_structure_data(self.structure_type)
-        cost = data.base_cost
-        player.spend_resources(cost)
-
-        # Place structure
-        board = game.get_board()
-        board.place_structure(self.coord, player, self.structure_type)
-
-        # Award victory points
-        player.gain_victory_points(data.victory_points)
-
-        # Grant cult advancement based on terrain type
-        cult_board = game.get_cult_board()
-        if cult_board:
-            hex_space = board.get_hex(self.coord)
-            if hex_space:
-                # Map terrain types to cult types (simplified)
-                from .board import TerrainType
-                from .cults import CultType
-
-                terrain_cult_map = {
-                    TerrainType.PLAINS: CultType.AIR,
-                    TerrainType.SWAMP: CultType.WATER,
-                    TerrainType.FOREST: CultType.EARTH,
-                    TerrainType.MOUNTAINS: CultType.FIRE,
-                    TerrainType.DESERT: CultType.FIRE,
-                    TerrainType.LAKES: CultType.WATER,
-                    TerrainType.WASTELAND: CultType.EARTH,
-                }
-
-                cult_type = terrain_cult_map.get(hex_space.terrain)
-                if cult_type:
-                    # Dwellings grant 1 step, other structures grant 2
-                    steps = 1 if self.structure_type == StructureType.DWELLING else 2
-                    power_gained = cult_board.advance_on_cult(player, cult_type, steps)
-                    # Power is granted by the observer, no need to handle it here
-                    # VP for cult tracks is only awarded at end-game
-
-    def describe(self) -> str:
-        """Describe the build action."""
-        from .structures import get_structure_data
-
-        name = get_structure_data(self.structure_type).name
-        return f"Build {name} at {self.coord}"
+    def pass_turn(self) -> None:
+        """Pass for the remainder of the round."""
+        action: PassAction = {
+            "action": "pass",
+            "player": self.__player,
+        }
+        self.__game.execute_action(action)
 
 
-@dataclass
-class TerraformAction(BaseAction):
-    """Terraform hex action. Simplified: no bonus cards or special abilities."""
+class BaseActionExecutor(ActionExecutor):
+    """
+    PATTERN: Command pattern base implementation
+    TYPE: Abstract base with concrete shared methods
+    Base implementation for action validation and execution.
+    """
 
-    coord: AxialCoord
+    __board: Board
+    __player: Player
 
-    def _validate_specific(self, game: Game, player: Player) -> None:
-        """Validate the terraform action."""
-        board = game.get_board()
+    def __new__(cls, board: Board, player: Player) -> BaseActionExecutor:
+        """Construct executor with game context."""
+        self = super().__new__(cls)
+        self.__board = board
+        self.__player = player
+        return self
 
-        # Get the hex
-        hex_space = board.get_hex(self.coord)
-        if not hex_space:
-            raise ValueError(f"Invalid coordinate: {self.coord}")
+    @property
+    def board(self) -> Board:
+        """The game board."""
+        return self.__board
 
-        # Check hex is empty
-        if hex_space.owner is not None:
-            raise ValueError("Cannot terraform occupied hex")
+    @property
+    def player(self) -> Player:
+        """The acting player."""
+        return self.__player
 
-        # Check it's not already home terrain
-        home_terrain = player.get_home_terrain()
-        if hex_space.terrain == home_terrain:
-            raise ValueError("Hex is already home terrain")
+    def can_execute(self, action: GameAction) -> bool:
+        """
+        Check if action can be executed without raising errors.
 
-        # Calculate terraform distance
-        distance = self._calculate_terraform_distance(hex_space.terrain, home_terrain)
+        STAGING: Validates all preconditions before execution.
+        """
+        try:
+            self._validate(action)
+            cost = self.get_cost(action)
+            return self.player.can_afford(cost)
+        except (ValueError, KeyError):
+            return False
 
-        # Check adjacency to player's structures
-        player_structures = board.get_structures_of_player(player)
-        if not player_structures:
-            raise ValueError("Must have at least one structure to terraform")
+    def execute(self, action: GameAction) -> None:
+        """
+        Execute the action after validation.
 
-        # For terraforming, only check direct adjacency (no shipping)
-        if not board.is_hex_reachable_by_player(
-            self.coord, player, include_shipping=False
-        ):
-            raise ValueError("Can only terraform hexes adjacent to your structures")
+        STAGING: Validates action legality and resource availability.
+        """
+        self._validate(action)
+        cost = self.get_cost(action)
 
-        # Check resources (spade cost)
-        cost = player.get_spade_cost(distance)
-        if not player.get_resources().can_afford(cost):
-            raise ValueError(f"Cannot afford terraforming: need {cost}")
+        if not self.player.can_afford(cost):
+            raise ValueError(f"Insufficient resources: need {cost}")
 
-    def _calculate_terraform_distance(
+        self.player.spend_resources(cost)
+        self._perform(action)
+
+    def _validate(self, action: GameAction) -> None:
+        """Validate common action requirements."""
+        if action["player"] != self.player.name:
+            raise ValueError(f"Action player mismatch: {action['player']}")
+        if self.player.has_passed:
+            raise ValueError("Player has already passed")
+
+    def _perform(self, action: GameAction) -> None:
+        """Perform the action. Subclasses must implement."""
+        raise NotImplementedError
+
+    def _position_to_coord(self, position: Position) -> HexCoord:
+        """Convert position tuple to HexCoord."""
+        return HexCoord(*position)
+
+
+class TransformExecutor(BaseActionExecutor):
+    """
+    PATTERN: Concrete command for terrain transformation
+    TYPE: Specialized executor with faction ability integration
+    """
+
+    def get_cost(self, action: GameAction) -> ResourceCost:
+        """Calculate spades needed for transformation."""
+        action = cast(TransformAction, action)
+        coord = self._position_to_coord(action["position"])
+        target = action["target_terrain"]
+
+        current = self.board.get_terrain(coord)
+        base_spades = self._calculate_distance(current, target)
+
+        # Apply faction ability
+        ability = self.player.faction_ability
+        spades = ability.modify_terrain_cost(base_spades)
+
+        return {"spades": spades}
+
+    def _validate(self, action: GameAction) -> None:
+        """
+        Validate transformation is legal.
+
+        STAGING: Validates position exists, terrain differs, and adjacency.
+        """
+        super()._validate(action)
+        action = cast(TransformAction, action)
+
+        coord = self._position_to_coord(action["position"])
+        target = action["target_terrain"]
+
+        # Check position exists
+        if not self.board.has_position(coord):
+            raise ValueError(f"Invalid position: {action['position']}")
+
+        # Check not already target terrain
+        current = self.board.get_terrain(coord)
+        if current == target:
+            raise ValueError(f"Already {target.value} terrain")
+
+        # Check no building present
+        if self.board.get_building(coord) is not None:
+            raise ValueError("Cannot transform terrain with building")
+
+        # Check adjacency to player's buildings
+        if not self._is_adjacent_to_player_building(coord):
+            raise ValueError("Must be adjacent to your buildings")
+
+    def _perform(self, action: GameAction) -> None:
+        """Transform the terrain."""
+        action = cast(TransformAction, action)
+        coord = self._position_to_coord(action["position"])
+        self.board.set_terrain(coord, action["target_terrain"])
+
+    def _calculate_distance(
         self, from_terrain: TerrainType, to_terrain: TerrainType
     ) -> int:
-        """Calculate spade distance in terrain cycle."""
-        from .board import TerrainType as TT
+        """Calculate spades needed between terrain types."""
+        if from_terrain == to_terrain:
+            return 0
 
-        terrain_cycle = [
-            TT.PLAINS,
-            TT.SWAMP,
-            TT.LAKES,
-            TT.FOREST,
-            TT.MOUNTAINS,
-            TT.WASTELAND,
-            TT.DESERT,
-        ]
+        cycle = TERRAIN_CYCLE
+        from_idx = cycle.index(from_terrain)
+        to_idx = cycle.index(to_terrain)
 
-        from_idx = terrain_cycle.index(from_terrain)
-        to_idx = terrain_cycle.index(to_terrain)
-
-        # Calculate minimum distance in the cycle
-        forward = (to_idx - from_idx) % 7
-        backward = (from_idx - to_idx) % 7
+        # Calculate distance in both directions
+        forward = (to_idx - from_idx) % len(cycle)
+        backward = (from_idx - to_idx) % len(cycle)
 
         return min(forward, backward)
 
-    def execute(self, game: Game, player: Player) -> None:
-        """Execute the terraform action."""
-        board = game.get_board()
+    def _is_adjacent_to_player_building(self, coord: HexCoord) -> bool:
+        """Check if position is adjacent to player's buildings."""
+        # First building doesn't need adjacency
+        if not self.player.buildings_on_board:
+            return True
 
-        hex_space = board.get_hex(self.coord)
-        if not hex_space:
-            return
+        for neighbor_coord in self.board.get_neighbors(coord):
+            building = self.board.get_building(neighbor_coord)
+            if building and building["owner"] == self.player.name:
+                return True
+        return False
 
-        # Calculate cost and spend resources
-        home_terrain = player.get_home_terrain()
-        distance = self._calculate_terraform_distance(hex_space.terrain, home_terrain)
-        cost = player.get_spade_cost(distance)
-        player.spend_resources(cost)
 
-        # Transform the terrain
-        board.terraform(self.coord, home_terrain)
+class BuildExecutor(BaseActionExecutor):
+    """
+    PATTERN: Concrete command for building construction
+    TYPE: Handles dwelling construction
+    """
 
-        # Award 2 VP per spade
-        player.gain_victory_points(2 * distance)
+    def get_cost(self, action: GameAction) -> ResourceCost:
+        """Get building cost with faction modifications."""
+        action = cast(BuildAction, action)
+        building_type = action["building_type"]
 
-    def describe(self) -> str:
-        """Describe the terraform action."""
-        return f"Terraform hex at {self.coord}"
+        base_cost = BUILDING_COSTS[building_type].copy()
+
+        # Apply faction ability
+        ability = self.player.faction_ability
+        return ability.modify_building_cost(base_cost)
+
+    def _validate(self, action: GameAction) -> None:
+        """
+        Validate building placement.
+
+        STAGING: Validates terrain, ownership, and placement rules.
+        """
+        super()._validate(action)
+        action = cast(BuildAction, action)
+
+        coord = self._position_to_coord(action["position"])
+        building_type = action["building_type"]
+
+        # Check position exists
+        if not self.board.has_position(coord):
+            raise ValueError(f"Invalid position: {action['position']}")
+
+        # Check correct terrain
+        terrain = self.board.get_terrain(coord)
+        home_terrain = FACTION_HOME_TERRAIN[self.player.faction]
+        if terrain != home_terrain:
+            raise ValueError(f"Can only build on {home_terrain.value}")
+
+        # Check no existing building
+        if self.board.get_building(coord) is not None:
+            raise ValueError("Position already has building")
+
+        # Only dwellings can be built directly
+        if building_type != BuildingType.DWELLING:
+            raise ValueError("Can only build dwellings directly")
+
+        # Check adjacency (except first building)
+        if not self._is_adjacent_or_first_building(coord):
+            raise ValueError("Dwelling must be adjacent to your buildings")
+
+    def _perform(self, action: GameAction) -> None:
+        """Build and trigger adjacency bonuses."""
+        action = cast(BuildAction, action)
+        coord = self._position_to_coord(action["position"])
+        building_type = action["building_type"]
+
+        # Place building
+        self.board.set_building(coord, building_type, self.player.name)
+        self.player.add_building(coord)
+
+        # Notify adjacent players for power gain
+        self._notify_neighbors(coord, building_type)
+
+    def _is_adjacent_or_first_building(self, coord: HexCoord) -> bool:
+        """Check if this is first building or adjacent to player's buildings."""
+        # First building is always allowed
+        if not self.player.buildings_on_board:
+            return True
+
+        # Otherwise must be adjacent
+        for neighbor_coord in self.board.get_neighbors(coord):
+            building = self.board.get_building(neighbor_coord)
+            if building and building["owner"] == self.player.name:
+                return True
+        return False
+
+    def _notify_neighbors(self, coord: HexCoord, building_type: BuildingType) -> None:
+        """Notify neighbors about new building for power gain."""
+        # This will be handled by board's observer pattern
+        self.board.notify_building_placed(coord, building_type, self.player.name)
+
+
+class PowerActionExecutor(BaseActionExecutor):
+    """
+    PATTERN: Concrete command for power actions
+    """
+
+    def get_cost(self, action: GameAction) -> ResourceCost:
+        """Get power cost for action."""
+        action = cast(PowerAction, action)
+        power_type = action["power_action"]
+        return {"power": POWER_ACTION_COSTS[power_type]}
+
+    def _validate(self, action: GameAction) -> None:
+        """Validate power action availability."""
+        super()._validate(action)
+        # Additional validation could check if action already used this turn
+
+    def _perform(self, action: GameAction) -> None:
+        """Execute power action effects."""
+        action = cast(PowerAction, action)
+
+        match action["power_action"]:
+            case PowerActionType.GAIN_SPADES:
+                self.player.gain_spades(2)
+            case PowerActionType.GAIN_WORKERS:
+                self.player.gain_resource("workers", 2)
+
+
+class PassExecutor(BaseActionExecutor):
+    """
+    PATTERN: Concrete command for passing
+    """
+
+    def get_cost(self, action: GameAction) -> ResourceCost:
+        """Passing is free."""
+        return {}
+
+    def _validate(self, action: GameAction) -> None:
+        """Validate pass action."""
+        if action["player"] != self.player.name:
+            raise ValueError(f"Action player mismatch: {action['player']}")
+        # Don't check has_passed - that's what we're setting!
+
+    def _perform(self, action: GameAction) -> None:
+        """Mark player as passed."""
+        self.player.mark_passed()
+
+
+class ActionFactory:
+    """
+    PATTERN: Factory pattern for creating action executors
+    TYPE: Static factory methods
+    """
+
+    @staticmethod
+    def create_executor(
+        action: GameAction, board: Board, player: Player
+    ) -> ActionExecutor:
+        match action["action"]:
+            case "transform":
+                return TransformExecutor(board, player)
+            case "build":
+                return BuildExecutor(board, player)
+            case "power":
+                return PowerActionExecutor(board, player)
+            case "pass":
+                return PassExecutor(board, player)

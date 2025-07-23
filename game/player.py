@@ -1,268 +1,295 @@
-"""Player module - manages player state, resources, and faction.
-
-This module implements player management including resources, faction abilities,
-and tracking of player progression in Terra Mystica.
-"""
-
 from __future__ import annotations
+from typing import TYPE_CHECKING, ClassVar, Self
 
-from dataclasses import dataclass
-from enum import Enum, auto
-from typing import TYPE_CHECKING, Self, Protocol, Dict
-
-from .board import TerrainType
-from .resources import Resources, PowerBowls
+from .power import PowerBowls
+from .faction import FactionFactory
+from .types import (
+    BuildingType,
+    BuildingData,
+    FactionType,
+    FactionAbility,
+    PowerGainOption,
+    PowerBowlState,
+    PowerObserver,
+    ResourceCost,
+    ResourceState,
+    SpadeCount,
+    Name,
+    VictoryPoints,
+    TerrainType,
+    FACTION_HOME_TERRAIN,
+    DEFAULT_GAME_CONFIG,
+)
 
 if TYPE_CHECKING:
     from .game import Game
+    from .coords import HexCoord
 
 
-class FactionType(Enum):
+class Player(PowerObserver):
     """
-    The factions available in the game.
+    PATTERN: Observer - implements PowerObserver protocol for power gain notifications.
+    TYPE: Composition over inheritance
 
-    TYPE: Enum for type-safe faction identification.
-
-    Simplified from full Terra Mystica: Starting with 3 core factions
-    instead of all 14. Each faction has unique abilities and home terrain.
-    """
-
-    # Wasteland factions
-    CHAOS_MAGICIANS = auto()
-    # Mountain factions
-    DWARVES = auto()
-    # Plains factions
-    HALFLINGS = auto()
-
-
-@dataclass
-class FactionData:
-    """
-    Static data about a faction.
-
-    TYPE: Data class bundling faction properties.
+    Manages player state including resources, power, buildings, and faction abilities.
     """
 
-    name: str
-    home_terrain: TerrainType
-    starting_resources: Resources
-    special_ability: str
-    # Simplified: Omitting exchange rates, stronghold abilities, etc.
+    # == Construction control ==
 
+    __is_constructing: ClassVar[bool] = False
 
-# Faction definitions
-FACTION_DATA: Dict[FactionType, FactionData] = {
-    FactionType.CHAOS_MAGICIANS: FactionData(
-        name="Chaos Magicians",
-        home_terrain=TerrainType.WASTELAND,
-        starting_resources=Resources(
-            workers=4,
-            coins=15,
-            priests=0,
-            power_bowls=PowerBowls((5, 7, 0)),  # 5 in Bowl I, 7 in Bowl II
-        ),
-        special_ability="Can use double spades on one action",
-    ),
-    FactionType.DWARVES: FactionData(
-        name="Dwarves",
-        home_terrain=TerrainType.MOUNTAINS,
-        starting_resources=Resources(
-            workers=3,
-            coins=15,
-            priests=0,
-            power_bowls=PowerBowls((5, 7, 0)),
-        ),
-        special_ability="Tunneling: Can build through mountains",
-    ),
-    FactionType.HALFLINGS: FactionData(
-        name="Halflings",
-        home_terrain=TerrainType.PLAINS,
-        starting_resources=Resources(
-            workers=3,
-            coins=15,
-            priests=0,
-            power_bowls=PowerBowls((5, 7, 0)),
-        ),
-        special_ability="Gain 1 additional spade per spade action",
-    ),
-}
+    @staticmethod
+    def _is_constructing() -> bool:
+        """Check if Game is constructing a player."""
+        return Player.__is_constructing
 
+    @staticmethod
+    def _set_constructing(value: bool) -> None:
+        """Set construction flag (for Game class only)."""
+        Player.__is_constructing = value
 
-class Player:
-    """
-    Represents a player in the game.
+    def __new__(
+        cls,
+        game: Game,
+        name: Name,
+        faction: FactionType,
+    ) -> Self:
+        """
+        Constructor for a player, for use by Game only.
 
-    PATTERN: Part of the Facade pattern - created and managed by Game class.
-    PATTERN: Context for Strategy pattern - holds faction-specific behavior.
+        STAGING: Validates construction is authorized by Game class.
+        """
+        if not Player._is_constructing():
+            raise TypeError("Player instances cannot be constructed directly.")
 
-    Players should not be instantiated directly by library users.
-    All player interaction happens through the Game facade.
+        self = super().__new__(cls)
+        self.__game = game
+        self.__name = name
+        self.__faction = faction
 
-    Simplified from full Terra Mystica:
-    - No favor tiles or bonus cards
-    - Basic terraforming and shipping tracks
-    - Simplified power actions
-    """
+        # Initialize resources from config
+        config = DEFAULT_GAME_CONFIG
+        self.__workers = config.get("starting_workers", 3)
+        self.__coins = config.get("starting_coins", 15)
+        self.__victory_points = 20  # Start with 20 VP for power decisions
+
+        # Initialize power bowls
+        bowl_1, bowl_2 = config.get("starting_power_distribution", (5, 7))
+        self.__power_bowls = PowerBowls(bowl_1, bowl_2)
+
+        # Initialize game state
+        self.__buildings = {}
+        self.__has_passed = False
+
+        # Create faction ability
+        self.__ability = FactionFactory.create_ability(faction)
+
+        return self
 
     __game: Game
+    __name: Name
     __faction: FactionType
-    __resources: Resources
-    __terraforming_level: int  # 0-3, reduces spade cost
-    __shipping_level: int  # 0-3, allows river crossing
-    __victory_points: int
-    __passed: bool  # Whether player has passed this round
+    __workers: int
+    __coins: int
+    __victory_points: VictoryPoints
+    __power_bowls: PowerBowls
+    __buildings: dict[HexCoord, BuildingType]
+    __has_passed: bool
+    __ability: FactionAbility
 
-    @classmethod
-    def _create_for_game(cls, game: Game, faction: FactionType) -> Self:
-        """
-        Create a player instance for a game.
+    # == Public read-only properties ==
 
-        This is a private factory method only for use by the Game class.
-        """
-        obj = object.__new__(cls)
-        obj.__game = game
-        obj.__faction = faction
+    @property
+    def game(self) -> Game:
+        return self.__game
 
-        # Initialize with faction starting resources
-        faction_data = FACTION_DATA[faction]
-        obj.__resources = faction_data.starting_resources
+    @property
+    def name(self) -> Name:
+        return self.__name
 
-        # Starting track levels
-        obj.__terraforming_level = 0
-        obj.__shipping_level = 0
-        obj.__victory_points = 20  # Standard starting VP
-        obj.__passed = False
-
-        return obj
-
-    def get_faction(self) -> FactionType:
-        """Get the player's faction."""
+    @property
+    def faction(self) -> FactionType:
         return self.__faction
 
-    def get_faction_name(self) -> str:
-        """Get the faction's display name."""
-        return FACTION_DATA[self.__faction].name
+    @property
+    def home_terrain(self) -> TerrainType:
+        return FACTION_HOME_TERRAIN[self.__faction]
 
-    def get_home_terrain(self) -> TerrainType:
-        """Get the faction's home terrain type."""
-        return FACTION_DATA[self.__faction].home_terrain
+    @property
+    def resources(self) -> ResourceState:
+        """Current resources as read-only dict."""
+        return {"workers": self.__workers, "coins": self.__coins}
 
-    def get_resources(self) -> Resources:
-        """Get a copy of the player's current resources."""
-        return self.__resources
-
-    def get_victory_points(self) -> int:
-        """Get the player's current victory points."""
+    @property
+    def victory_points(self) -> VictoryPoints:
         return self.__victory_points
 
-    def get_terraforming_level(self) -> int:
-        """Get the player's terraforming track level (0-3)."""
-        return self.__terraforming_level
+    @property
+    def power_state(self) -> PowerBowlState:
+        """Current power bowl state as read-only dict."""
+        return self.__power_bowls.state
 
-    def get_shipping_level(self) -> int:
-        """Get the player's shipping track level (0-3)."""
-        return self.__shipping_level
+    @property
+    def buildings(self) -> dict[HexCoord, BuildingType]:
+        """Copy of player's buildings by position."""
+        return self.__buildings.copy()
 
-    def get_spade_cost(self, distance: int) -> Resources:
-        """
-        Calculate the cost to terraform based on distance.
-
-        Distance is the number of terrain steps (1-3).
-        Terraforming track reduces the cost.
-        """
-        if distance < 1 or distance > 3:
-            raise ValueError(f"Invalid terraform distance: {distance}")
-
-        # Base cost: 3 workers per spade
-        # Each terraforming level reduces cost by 1 worker
-        workers_per_spade = max(1, 3 - self.__terraforming_level)
-        total_workers = workers_per_spade * distance
-
-        return Resources(workers=total_workers)
-
+    @property
     def has_passed(self) -> bool:
-        """Check if the player has passed this round."""
-        return self.__passed
+        return self.__has_passed
 
-    def pass_turn(self) -> None:
-        """Mark the player as having passed for this round."""
-        self.__passed = True
+    def can_afford(self, cost: ResourceCost) -> bool:
+        """Check if player can afford the given cost."""
+        if cost.get("workers", 0) > self.__workers:
+            return False
+        if cost.get("coins", 0) > self.__coins:
+            return False
+        if cost.get("power", 0) > self.__power_bowls.available_power:
+            return False
+        return True
 
-    def reset_for_new_round(self) -> None:
-        """Reset player state for a new round."""
-        self.__passed = False
-
-    def spend_resources(self, cost: Resources) -> None:
+    def pay_cost(self, cost: ResourceCost) -> None:
         """
-        Spend resources from the player's pool.
+        Pay the given resource cost.
 
-        Raises:
-            ValueError: If player cannot afford the cost
+        STAGING: Validates sufficient resources before payment.
         """
-        self.__resources = self.__resources.subtract(cost)
+        if not self.can_afford(cost):
+            raise ValueError(f"Insufficient resources for cost: {cost}")
 
-    def gain_resources(self, income: Resources) -> None:
-        """Add resources to the player's pool."""
-        self.__resources = self.__resources.add(income)
+        self.__workers -= cost.get("workers", 0)
+        self.__coins -= cost.get("coins", 0)
 
-    def gain_power(self, amount: int) -> None:
-        """
-        Gain power tokens following bowl progression rules.
+        if power_cost := cost.get("power", 0):
+            self.__power_bowls.spend(power_cost)
 
-        Power tokens move from Bowl I → II → III.
-        """
-        self.__resources = self.__resources.gain_power(amount)
+    def _gain_resources(self, gain: ResourceState) -> None:
+        self.__workers += gain.get("workers", 0)
+        self.__coins += gain.get("coins", 0)
 
-    def gain_victory_points(self, points: int) -> None:
-        """Add victory points to the player's total."""
-        if points < 0:
-            raise ValueError(f"Cannot gain negative victory points: {points}")
+    def _gain_victory_points(self, points: VictoryPoints) -> None:
         self.__victory_points += points
 
-    def advance_terraforming(self) -> None:
+    def _lose_victory_points(self, points: VictoryPoints) -> None:
         """
-        Advance on the terraforming track.
+        Lose victory points (for power gain).
 
-        Simplified from full Terra Mystica: Just tracks 0-3 levels.
+        STAGING: Ensures VP cannot go below 0.
         """
-        if self.__terraforming_level >= 3:
-            raise ValueError("Terraforming already at maximum level")
-        self.__terraforming_level += 1
+        self.__victory_points = max(0, self.__victory_points - points)
 
-    def advance_shipping(self) -> None:
+    # == Power management ==
+
+    def gain_power(self, amount: int) -> None:
+        """Gain power tokens through the bowl system."""
+        self.__power_bowls.gain(amount)
+
+    def calculate_adjacent_power(
+        self, hex_positions: list[HexCoord]
+    ) -> PowerGainOption:
         """
-        Advance on the shipping track.
+        Calculate potential power gain from adjacent buildings.
 
-        Simplified from full Terra Mystica: Just tracks 0-3 levels.
+        TYPE: Returns structured data for power gain decision.
         """
-        if self.__shipping_level >= 3:
-            raise ValueError("Shipping already at maximum level")
-        self.__shipping_level += 1
+        from .types import BUILDING_POWER_VALUES
 
-    def get_income(self) -> Resources:
+        total_power = 0
+        from_buildings: list[BuildingData] = []
+
+        for pos in hex_positions:
+            if building_type := self.__buildings.get(pos):
+                power_value = BUILDING_POWER_VALUES[building_type]
+                total_power += power_value
+                from_buildings.append(
+                    {
+                        "type": building_type,
+                        "owner": self.__name,
+                        "position": pos,
+                    }
+                )
+
+        return {
+            "power_gain": total_power,
+            "vp_cost": max(0, total_power - 1),
+            "from_buildings": from_buildings,
+        }
+
+    # == Building management ==
+
+    def add_building(self, position: HexCoord, building_type: BuildingType) -> None:
         """
-        Calculate the player's income for the income phase.
+        Record a new building for this player.
 
-        Simplified from full Terra Mystica: Basic income based on
-        structures, no bonus cards or favor tiles.
+        STAGING: Validates position is not already occupied by this player.
         """
-        # Base income
-        workers = 1  # Base worker income
-        coins = 0
-        priests = 0
-        power = 0
+        if position in self.__buildings:
+            raise ValueError(f"Player already has building at {position}")
 
-        # TODO: Add income from structures on board
-        # Each trading house gives +2 coins
-        # Each temple gives +1 priest
-        # Stronghold gives faction-specific income
+        self.__buildings[position] = building_type
 
-        # Create power bowls for income (power starts in bowl I)
-        power_bowls = PowerBowls((power, 0, 0)) if power > 0 else PowerBowls()
+    def remove_building(self, position: HexCoord) -> BuildingType:
+        """
+        Remove and return building at position.
 
-        return Resources(
-            workers=workers,
-            coins=coins,
-            priests=priests,
-            power_bowls=power_bowls,
-        )
+        STAGING: Validates building exists at position.
+        """
+        if position not in self.__buildings:
+            raise ValueError(f"No building at position {position}")
+
+        return self.__buildings.pop(position)
+
+    def get_building_count(self, building_type: BuildingType) -> int:
+        """Count buildings of a specific type."""
+        return sum(1 for b in self.__buildings.values() if b == building_type)
+
+    # == Game actions ==
+
+    def pass_turn(self) -> None:
+        """Mark player as passed."""
+        self.__has_passed = True
+
+    # == Faction abilities ==
+
+    def modify_terrain_cost(self, base_cost: SpadeCount) -> SpadeCount:
+        """Apply faction ability to terrain transformation cost."""
+        return self.__ability.modify_terrain_cost(base_cost)
+
+    def modify_building_cost(self, base_cost: ResourceCost) -> ResourceCost:
+        """Apply faction ability to building cost."""
+        return self.__ability.modify_building_cost(base_cost)
+
+    # == Observer pattern implementation ==
+
+    def notify_adjacent_building(
+        self,
+        builder: Name,
+        position: HexCoord,
+        building_type: BuildingType,
+    ) -> bool:
+        """
+        PATTERN: Observer method for power gain notifications.
+
+        Returns True if accepting power (and VP loss), False otherwise.
+        """
+        if builder == self.__name:
+            return False  # No power from own buildings
+
+        # Calculate potential power gain
+        adjacent_positions = self.game.board.get_adjacent_positions(position)
+        option = self.calculate_adjacent_power(adjacent_positions)
+
+        if option["power_gain"] == 0:
+            return False  # No adjacent buildings
+
+        # Decision logic: Accept if we can afford the VP loss
+        # and we need power (less than 6 in bowl III)
+        can_afford_vp = self.__victory_points >= option["vp_cost"]
+        need_power = self.__power_bowls.available_power < 6
+
+        if can_afford_vp and need_power:
+            self.gain_power(option["power_gain"])
+            self._lose_victory_points(option["vp_cost"])
+            return True
+
+        return False
