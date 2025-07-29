@@ -4,7 +4,7 @@
 - Basic adjacency rules for building
 
 2. Power bowl system
-- Implement the 3-bowl power circulation mechanic
+- Simplified power system, single score instead of bowls
 - Power gaining from adjacent opponent building
 - 2 simple power actions
 
@@ -20,17 +20,19 @@
 - uses simple alternating turns instead of phases
 
 7. Victory conditions:
-- Buildings: 2 VP per Dwelling, 5 VP per Trading House 
-- Cult track: 8/4/2 VP for 1st/2nd/3rd place 
+- Buildings: 2 VP per Dwelling
 - Largest connected area: 18/12/6 VP for 1st/2nd/3rd
+
+8. Power actions: 2 actions:
+- Gain 2 spades (costs 4 power)
+- Gain 3 workers (costs 3 power)
 
 Module structure:
 game/ ├── init.py # Exports only Game class 
       ├── types.py # TypedDicts, Enums, Protocols, type aliases 
       ├── hexgrid.py # Generic hex grid (like WithdrawableStack) 
       ├── coords.py # Coordinate systems and conversions 
-      ├── power.py # Power bowl system with state management 
-      ├── terrain.py # Terrain transformation logic 
+      ├── power.py # Simplified power system, single score instead of bowls
       ├── faction.py # Faction hierarchy with factory 
       ├── board.py # Game board using hexgrid 
       ├── actions.py # Action validation and execution 
@@ -49,8 +51,8 @@ What to Explicitly Cut
 - Favor tiles, Bonus cards, Town tiles 
 - Priests as a resource 
 - Cult tracks
-- Round structure (use simple turn-based play) 
-- Complex scoring (just count buildings and cult position)
+- Phase structure (use simple turn-based play) 
+- Complex scoring (just count buildings)
 
 
 Prompts
@@ -223,65 +225,6 @@ This is a classic Observer pattern where:
 The pattern is already properly implemented in your code! It's one of the core mechanics from Terra Mystica - when someone builds next to you, you can gain power but must pay victory points.
 
 
-# Cult Track
-You're right to catch that TODO - it's another case where I was adding complexity from the full Terra Mystica rules. According to your simplified plan:
-
-**Your Plan Says:**
-- **One cult track** (not four)
-- **Simple advancement mechanics**
-- **Cult track: 8/4/2 VP for 1st/2nd/3rd place** (scored at game end only)
-
-So the cult track in your simplified game:
-1. **No power gains** during advancement
-2. **Only scores at game end** based on relative positions
-3. **Simple advancement** - pay 1 worker, move up 1 space
-
-## The Clean Implementation:
-
-```python
-# In AdvanceCultCommand
-def execute(self) -> None:
-    """Advance on cult track."""
-    player = self._get_player()
-    
-    # Pay cost
-    cost = self.get_cost()
-    player.pay_cost(cost)
-    
-    # Advance on track
-    player.advance_cult(1)
-    # That's it! No power gains in simplified game
-```
-
-## Cult Scoring (in game.py at game end):
-
-```python
-def __calculate_final_scores(self) -> dict[Name, VictoryPoints]:
-    """Calculate final scores for all players."""
-    # ... other scoring ...
-    
-    # Cult track scoring - sort players by position
-    cult_positions = [
-        (name, self.__players[name].cult_position)
-        for name in self.__turn_order
-    ]
-    cult_positions.sort(key=lambda x: x[1], reverse=True)
-    
-    # Award points for top 3 positions
-    scoring_map = {0: 8, 1: 4, 2: 2}  # 1st/2nd/3rd place
-    
-    for rank, (player_name, position) in enumerate(cult_positions[:3]):
-        if position > 0:  # Must have advanced at least once
-            scores[player_name] += scoring_map.get(rank, 0)
-```
-
-So we should **remove that TODO** - the cult track is just:
-- Pay 1 worker to advance 1 space
-- Score 8/4/2 VP at game end for top 3 players
-- No intermediate benefits
-
-This keeps it simple and saves code!
-
 # Removal of commands
 Looking at our commands and game design, we can eliminate several commands that don't add value to our OOP design:
 
@@ -307,246 +250,200 @@ Paying 1 worker to advance 1 space is trivial. We could either:
 - Remove the cult track entirely (saves more lines)
 - OR make cult advancement automatic (e.g., gain cult when building)
 
-## Refined Implementation:
+# Fluent interface pattrn
+
+```py
+# In game.py
+class Game:
+    def action(self, player_name: Name) -> ActionBuilder:
+        """
+        Create an action builder for the specified player.
+        
+        PATTERN: Fluent interface factory
+        
+        :param player_name: Name of the acting player
+        :return: ActionBuilder for chaining commands
+        :raises ValueError: if not player's turn
+        """
+        # Validate it's this player's turn
+        current_player = self.__player_order[self.__state["current_player_index"]]
+        if player_name != current_player:
+            raise ValueError(f"Not {player_name}'s turn")
+            
+        # Create builder with construction control
+        with ActionBuilder._constructing_builder():
+            return ActionBuilder(self, player_name)
+
+# Example usage:
+game = Game([("Alice", "witches"), ("Bob", "engineers")])
+
+# Clean, type-safe API
+game.action("Alice").transform(0, 1, "forest")
+game.action("Alice").build(0, 1)
+
+game.action("Bob").use_power("gain_workers")
+game.action("Bob").advance_cult()
+
+# Direct API still works
+action = {"action": "pass", "player": "Bob"}
+game.execute_action(action)
+```
+
+# Observer pattern but for boards
+Looking at the Terra Mystica rules, here's how the adjacency power bonus works:
+
+## From the Rules (page 12):
+
+**Power via Structures**
+Each Structure has a Power value:
+- The Stronghold and Sanctuary have a Power value of 3.
+- Trading houses and Temples have a Power value of 2.
+- Dwellings have a Power value of 1.
+
+When building a Dwelling (Action #1) or upgrading a Structure (Action #4), you must inform the owners of Structures directly adjacent to your Structure that they may gain Power.
+
+In order to determine the total number of Power an opponent may gain, add up the Power values of their Structures directly adjacent to your newly built Structure.
+
+**The price of Power**
+Unfortunately, Power gained via Structures is not free. To gain that Power, you need to lose a number of Victory points equal to one fewer than the number of Power gained.
+
+## Observer Pattern Implementation:
 
 ```python
-"""
-Command pattern for core game actions only.
-
-PATTERN: Command pattern for transform and build actions.
-TYPE: Focused implementation with only essential commands.
-"""
-
-from __future__ import annotations
-from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Self
-
-from .coords import HexCoord
-from .types import (
-    BuildingType,
-    ResourceCost,
-    TerrainType,
-    BUILDING_COSTS,
-    SPADE_EXCHANGE_RATE,
-)
-
-if TYPE_CHECKING:
-    from .game import Game
-    from .player import Player
-    from .board import Board
-
-
-class GameCommand(ABC):
+# In board.py
+class Board:
     """
-    PATTERN: Command pattern base for game actions.
+    PATTERN: Observer pattern for power gain notifications
+    TYPE: Subject in observer pattern
+    """
     
-    Only implements commands that add meaningful game logic.
-    """
-
-    def __new__(cls, game: Game, player_name: str) -> Self:
-        """Validate command creation."""
-        from .game import Game
-        
-        if not isinstance(game, Game):
-            raise TypeError("Commands must be created by Game")
-        
-        self = super().__new__(cls)
-        self._game = game
-        self._player_name = player_name
-        return self
-
-    @abstractmethod
-    def execute(self) -> None:
+    def notify_building_placed(
+        self, 
+        position: HexCoord, 
+        building_type: BuildingType,
+        builder_name: Name
+    ) -> None:
         """
-        Execute the command with integrated validation.
+        Notify adjacent players about building placement.
         
-        STAGING: Raises ValueError if validation fails.
+        PATTERN: Observer notification
         """
-        ...
-
-    def _player(self) -> Player:
-        return self._game._get_player_internal(self._player_name)
-
-    def _board(self) -> Board:
-        return self._game._get_board()
-
-
-class TransformCommand(GameCommand):
-    """
-    Transform terrain - core mechanic showing command pattern.
-    
-    Encapsulates terrain transformation logic including:
-    - Distance calculation
-    - Faction ability application  
-    - Resource cost calculation
-    """
-
-    def __new__(
-        cls, game: Game, player: str, pos: HexCoord, terrain: TerrainType
-    ) -> Self:
-        self = super().__new__(cls, game, player)
-        self._pos = pos
-        self._terrain = terrain
-        return self
-
-    def execute(self) -> None:
-        """
-        STAGING: Validates position, adjacency, and resources.
-        """
-        board = self._board()
-        player = self._player()
-        
-        # Validate position
-        if not board.is_valid_position(self._pos):
-            raise ValueError("Invalid position")
-        if board.has_building(self._pos):
-            raise ValueError("Position occupied")
-        
-        current = board.get_terrain(self._pos)
-        if current == self._terrain:
-            raise ValueError("Already target terrain")
-        
-        # Validate adjacency
-        if not board.is_adjacent_to_player(self._pos, player):
-            raise ValueError("Must be adjacent to your buildings")
-        
-        # Calculate cost with faction ability
-        tm = self._game._get_terrain_manager()
-        base_spades = tm.calculate_distance(current, self._terrain)
-        spades = player.get_modify_terrain_cost(base_spades)
-        cost = {"workers": spades * SPADE_EXCHANGE_RATE}
-        
-        # Validate affordability
-        if not player.can_afford(cost):
-            raise ValueError(f"Need {cost['workers']} workers")
-        
-        # Execute
-        player.pay_cost(cost)
-        board.set_terrain(self._pos, self._terrain)
-
-
-class BuildingCommand(GameCommand):
-    """
-    Build or upgrade buildings - core mechanic with strategy pattern.
-    
-    Handles both dwelling construction and upgrades with:
-    - Terrain validation
-    - Adjacency rules
-    - Faction cost modifications
-    - Adjacency discounts
-    """
-
-    def __new__(
-        cls, game: Game, player: str, pos: HexCoord, upgrade: bool = False
-    ) -> Self:
-        self = super().__new__(cls, game, player)
-        self._pos = pos
-        self._upgrade = upgrade
-        return self
-
-    def execute(self) -> None:
-        """
-        STAGING: Validates and executes build or upgrade.
-        """
-        if self._upgrade:
-            self._execute_upgrade()
-        else:
-            self._execute_build()
-
-    def _execute_build(self) -> None:
-        """Build a new dwelling."""
-        board = self._board()
-        player = self._player()
-        
-        # Validate terrain and position
-        if board.get_terrain(self._pos) != player.home_terrain:
-            raise ValueError("Must build on home terrain")
-        if board.has_building(self._pos):
-            raise ValueError("Position occupied")
-        
-        # Validate adjacency (unless first building)
-        if player.get_buildings_list():
-            if not board.is_adjacent_to_player(self._pos, player):
-                raise ValueError("Must be adjacent to your buildings")
-        
-        # Apply faction ability to cost
-        base = BUILDING_COSTS[BuildingType.DWELLING]
-        cost = player.get_modify_building_cost(base)
-        
-        if not player.can_afford(cost):
-            raise ValueError(f"Need {cost} to build")
-        
-        # Execute
-        player.pay_cost(cost)
-        board.place_building(self._pos, BuildingType.DWELLING, self._player_name)
-        player.add_building(self._pos, BuildingType.DWELLING)
-
-    def _execute_upgrade(self) -> None:
-        """Upgrade dwelling to trading house."""
-        board = self._board()
-        player = self._player()
-        
-        # Validate building exists and is dwelling
-        building = player.get_building_at(self._pos)
-        if building != BuildingType.DWELLING:
-            raise ValueError("Can only upgrade dwellings")
-        
-        # Calculate cost with faction ability
-        base = BUILDING_COSTS[BuildingType.TRADING_HOUSE]
-        cost = player.get_modify_building_cost(base)
-        
-        # Apply adjacency discount
-        if board.has_adjacent_opponent_building(self._pos, self._player_name):
-            cost["coins"] = cost.get("coins", 0) // 2
-        
-        if not player.can_afford(cost):
-            raise ValueError(f"Need {cost} to upgrade")
-        
-        # Execute
-        player.pay_cost(cost)
-        player.remove_building(self._pos)
-        player.add_building(self._pos, BuildingType.TRADING_HOUSE)
-        board.place_building(
-            self._pos, BuildingType.TRADING_HOUSE, self._player_name
+        # Find all adjacent opponent buildings
+        power_opportunities = self._calculate_power_opportunities(
+            position, builder_name
         )
+        
+        # Notify each affected player
+        for opponent_name, power_gain in power_opportunities.items():
+            player = self._get_player(opponent_name)
+            # Observer decides whether to accept
+            player.notify_adjacent_building(
+                builder_name, position, building_type, power_gain
+            )
+    
+    def _calculate_power_opportunities(
+        self, position: HexCoord, builder_name: Name
+    ) -> dict[Name, int]:
+        """Calculate power gain for each adjacent opponent."""
+        opportunities = {}
+        
+        for neighbor_pos in self.grid.get_neighbors(position):
+            if neighbor_pos in self.grid:
+                building = self.get_building(neighbor_pos)
+                if building and building["owner"] != builder_name:
+                    owner = building["owner"]
+                    power_value = BUILDING_POWER_VALUES[building["type"]]
+                    opportunities[owner] = opportunities.get(owner, 0) + power_value
+                    
+        return opportunities
+
+
+# In player.py
+class Player:
+    """
+    PATTERN: Observer in observer pattern
+    TYPE: Concrete observer implementation
+    """
+    
+    def notify_adjacent_building(
+        self,
+        builder: Name,
+        position: HexCoord,
+        building_type: BuildingType,
+        power_gain: int
+    ) -> bool:
+        """
+        Handle notification of adjacent building construction.
+        
+        PATTERN: Observer update method
+        
+        :param power_gain: Total power available from adjacent buildings
+        :return: True if accepting power, False if declining
+        """
+        # Calculate VP cost
+        vp_cost = max(0, power_gain - 1)  # First power is free
+        
+        # Auto-decline if would go negative VP
+        if self.victory_points < vp_cost:
+            return False
+            
+        # In simplified version, always accept if affordable
+        # (In full game, this could be a strategic decision)
+        if vp_cost <= self.victory_points:
+            self.gain_power(power_gain)
+            self.lose_victory_points(vp_cost)
+            return True
+            
+        return False
 ```
 
-And in `game.py`, simplify the API:
+## Why This is Perfect for Observer Pattern:
+
+1. **Decoupling**: The builder doesn't need to know about other players' power systems
+2. **Dynamic Subscribers**: Players automatically get notified when adjacent
+3. **Individual Responses**: Each player decides independently whether to accept
+4. **Event-Driven**: Building placement triggers notifications
+
+## Simplified Version for Your Implementation:
+
+Since you have limited lines, you could simplify:
 
 ```python
-# Remove these methods:
-# - use_power_action() 
-# - advance_on_cult_track()
-
-# Simplify pass to not use command:
-def pass_turn(self, player_name: Name) -> None:
-    """Pass for the round - no command needed."""
-    self.__validate_turn(player_name)
-    
-    if player_name in self.__passed_players:
-        raise ValueError(f"{player_name} already passed")
-    
-    self.__passed_players.add(player_name)
-    self.end_turn()
-
-# Add simple conversion instead of power actions:
-def convert_resources(
-    self, 
-    player_name: Name, 
-    from_resource: str, 
-    to_resource: str,
-    amount: int
-) -> None:
-    """Simple resource conversion following game rules."""
-    self.__validate_turn(player_name)
-    # e.g., 3 power → 1 worker, 1 power → 1 coin
+# Simplified: Always accept power if able
+def notify_adjacent_building(self, power_gain: int) -> None:
+    """Simplified observer: auto-accept if possible."""
+    vp_cost = max(0, power_gain - 1)
+    if self.victory_points >= vp_cost:
+        self.gain_power(power_gain)
+        self.lose_victory_points(vp_cost)
 ```
 
-This approach:
-1. **Saves ~250 lines** from actions.py
-2. **Focuses on core mechanics** that demonstrate OOP
-3. **Keeps interesting patterns**: Command pattern with real logic
-4. **Removes trivial commands** that don't add design value
-5. **Simplifies Game API** by removing unnecessary methods
+This demonstrates the Observer pattern while keeping the code lean. The pattern shows:
+- **Subject** (Board) maintains list of adjacent structures
+- **Observers** (Players) get notified of relevant events  
+- **Loose Coupling** - Board doesn't know Player implementation details
+- **Event Propagation** - Building action cascades to power gains
 
-The remaining commands (Transform and Building) are substantial enough to demonstrate the command pattern properly while being essential to the game mechanics.
+This is one of the most elegant uses of Observer pattern in board games!
+
+
+## removed code
+```py
+# game.py
+    def get_board_state(self) -> dict[str, list[tuple[int, int]]]:
+        """Get positions of all buildings by player.
+
+        Returns dict mapping player names to lists of (q, r) coordinates.
+        """
+        positions_by_player: dict[str, list[tuple[int, int]]] = {}
+
+        for coord in self.__board.get_all_positions():
+            building = self.__board.get_building(coord)
+            if building:
+                owner = building["owner"]
+                if owner not in positions_by_player:
+                    positions_by_player[owner] = []
+                positions_by_player[owner].append((coord.q, coord.r))
+
+        return positions_by_player
+```

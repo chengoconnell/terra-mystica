@@ -316,7 +316,7 @@ def test_cult_track() -> None:
         Player._set_constructing(False)
 
 
-def test_pass_turn() -> None:
+def test_end_turn() -> None:
     """Test passing mechanism."""
     Player._set_constructing(True)
     try:
@@ -324,7 +324,7 @@ def test_pass_turn() -> None:
         player = Player(game_mock, "Test", FactionType.WITCHES)
 
         assert not player.has_passed
-        player.pass_turn()
+        player.end_turn()
         assert player.has_passed
     finally:
         Player._set_constructing(False)
@@ -361,7 +361,7 @@ if __name__ == "__main__":
         test_notify_adjacent_building,
         test_faction_ability_integration,
         test_cult_track,
-        test_pass_turn,
+        test_end_turn,
         test_home_terrain,
     ]
     

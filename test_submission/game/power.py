@@ -29,6 +29,7 @@ class PowerManager:
         return self.__power - old_power
 
     def spend_power(self, amount: PowerCount) -> None:
+        """STAGING: Validates sufficient power before spending."""
         if amount > self.__power:
             raise ValueError(f"Insufficient power: {amount} > {self.__power}")
         self.__power -= amount

@@ -7,7 +7,6 @@ class BaseFactionAbility(FactionAbility):
     TYPE: Concrete base class implementing FactionAbility protocol.
     PATTERN: Strategy pattern.
     Base implementation of faction abilities with defaults.
-    Subclasses override methods to provide faction-specific modifications.
     """
 
     def modify_terrain_cost(self, base_cost: SpadeCount) -> SpadeCount:

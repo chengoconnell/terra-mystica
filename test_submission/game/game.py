@@ -16,31 +16,7 @@ from .game_types import (
 
 
 class Game:
-    """
-    PATTERN: Facade - Single entry point for all game functionality
-
-    Main API for Terra Mystica game. This is the only class that external
-    code should instantiate directly. All game actions and queries go through
-    this facade to ensure proper encapsulation and validation.
-
-    Simplified game flow:
-    1. Create game with max_rounds parameter
-    2. Add 2-3 players before starting
-    3. Players take turns using ActionBuilder methods
-    4. Game automatically handles rounds and scoring
-    5. Query final scores after game ends
-
-    Example usage:
-        game = Game(max_rounds=10)
-        alice = game.add_player("Alice", "witches")
-        bob = game.add_player("Bob", "engineers")
-
-        # Players use ActionBuilder for all actions
-        alice.build(0, 0)  # Build at position (0, 0)
-        bob.transform(1, 0, "mountains")  # Transform terrain
-        alice.use_power("gain_workers")  # Use power action
-        bob.pass_turn()  # Pass for the round
-    """
+    """PATTERN: Facade - Single entry point for all game functionality"""
 
     __board: Board
     __players: list[Player]
@@ -48,22 +24,12 @@ class Game:
     __active_players: set[Name]
     __pass_order: list[Name]  # Track order of passing for next round
     __game_state: GameState
+    __max_turns: int
     __max_rounds: int
     __action_builders: dict[Name, ActionBuilder]
 
     def __new__(cls, max_rounds: int = 10) -> Self:
-        """
-        Create a new game instance.
-
-        Simplification: no phases, just rounds. Round moves to the next when
-        every player has passed. Rounds continue until max_rounds is reached.
-
-        Args:
-            max_rounds: Maximum number of rounds before game ends (default 10)
-
-        Raises:
-            ValueError: If max_rounds is not positive
-        """
+        """Create a new game instance. Simplification: no phases, just rounds. In each round, players can take one action"""
         if max_rounds <= 0:
             raise ValueError("Max turns must be positive")
 
@@ -86,20 +52,8 @@ class Game:
     # Player management
 
     def add_player(self, name: str, faction: str) -> ActionBuilder:
-        """
-        Add a player to the game. Returns ActionBuilder for this player.
-
+        """Add a player to the game. Returns ActionBuilder for this player.
         STAGING: Validates that the game has not yet started.
-
-        Args:
-            name: Unique player name
-            faction: Faction name ("witches", "engineers", or "nomads")
-
-        Returns:
-            ActionBuilder for executing this player's actions
-
-        Raises:
-            ValueError: If game already started, player exists, or faction taken
         """
         if self.__game_state["current_round"] > 1:
             raise ValueError("Cannot add players after game starts")
@@ -131,18 +85,7 @@ class Game:
         return builder
 
     def get_player_action(self, name: str) -> ActionBuilder:
-        """
-        Get action builder for a player, used for executing player actions.
-
-        Args:
-            name: Player name
-
-        Returns:
-            ActionBuilder for the player
-
-        Raises:
-            KeyError: If player doesn't exist
-        """
+        """Get action builder for a player, used for executing player actions."""
         if name not in self.__action_builders:
             raise KeyError(f"Unknown player: {name}")
         return self.__action_builders[name]
@@ -154,12 +97,7 @@ class Game:
 
     @property
     def current_player(self) -> str:
-        """
-        Name of the current player.
-
-        Raises:
-            ValueError: If game is finished or no players exist
-        """
+        """Name of the current player."""
         if self.__game_state["is_finished"]:
             raise ValueError("Game is finished")
         if not self.__players:
@@ -175,31 +113,18 @@ class Game:
 
     @property
     def current_round(self) -> int:
-        """Current round number (1-based)."""
         return self.__game_state["current_round"]
 
     @property
     def rounds_remaining(self) -> int:
-        """Number of rounds left before game ends."""
         return max(0, self.__max_rounds - self.__game_state["current_round"])
 
     # Action execution
 
     def execute_action(self, action: GameAction) -> None:
-        """
-        Execute a game action for the current player.
-
+        """Execute a game action.
         PATTERN: Command pattern execution
-        STAGING: Validates player turn and game not finished
-
-        Called internally by ActionBuilder methods. External code should
-        use ActionBuilder, not call this directly.
-
-        Args:
-            action: Action to execute (build, transform, power, or pass)
-
-        Raises:
-            ValueError: If game finished, not player's turn, or action invalid
+        STAGING: Validates player turn and game not finished.
         """
         if self.__game_state["is_finished"]:
             raise ValueError("Game is finished")
@@ -268,13 +193,7 @@ class Game:
         raise RuntimeError("No active players found but round hasn't ended")
 
     def _start_new_round(self) -> None:
-        """
-        Reset for a new round.
-
-        Handles round-based income distribution and turn order based on
-        who passed first in the previous round.
-        """
-        # Increment round
+        """Reset for a new round."""
         self.__game_state["current_round"] += 1
 
         # Check end game
@@ -310,12 +229,7 @@ class Game:
             current.start_turn()
 
     def _has_valid_actions(self, player: Player) -> bool:
-        """
-        Check if player has any valid actions.
-
-        Simplified: just check if they have resources for anything.
-        In full game would check all possible board positions.
-        """
+        """Check if player has any valid actions. Simplified: just check if they have resources for anything."""
         # Can always pass
         if player.has_passed:
             return False
@@ -328,11 +242,7 @@ class Game:
         return has_workers or has_coins or has_power
 
     def _end_game(self) -> None:
-        """
-        End the game and determine winner.
-
-        Calculates final scores including area bonuses and declares winner.
-        """
+        """End the game and determine winner."""
         self.__game_state["is_finished"] = True
 
         # Calculate final scores
@@ -344,14 +254,7 @@ class Game:
             self.__game_state["winner"] = winner_name
 
     def _calculate_final_scores(self) -> dict[Name, VictoryPoints]:
-        """
-        Calculate final victory points for all players.
-
-        Includes:
-        - Base VP from buildings and actions
-        - Remaining resources converted to VP
-        - Area scoring for largest connected groups
-        """
+        """Calculate final victory points for all players."""
         scores: dict[Name, VictoryPoints] = {}
         scoring = DEFAULT_SCORING
 
@@ -384,49 +287,25 @@ class Game:
     # Game state queries
 
     def get_player_view(self, name: str) -> PlayerView:
-        """
-        Get read-only view of player state.
-
-        Args:
-            name: Player name
-
-        Returns:
-            TypedDict with player's current state
-
-        Raises:
-            KeyError: If player doesn't exist
-        """
+        """Get read-only view of player state."""
         if name not in self.__player_map:
             raise KeyError(f"Unknown player: {name}")
         return self.__player_map[name].get_view()
 
     def get_final_scores(self) -> dict[str, int] | None:
-        """
-        Get final scores if game is finished.
-
-        Returns:
-            Dict of player names to final scores, or None if game not finished
-        """
+        """Get final scores if game is finished."""
         if not self.__game_state["is_finished"]:
             return None
         return self._calculate_final_scores()
 
     def get_winner(self) -> str | None:
-        """
-        Get winner name if game is finished.
-
-        Returns:
-            Name of winning player, or None if game not finished
-        """
+        """Get winner name if game is finished."""
         return self.__game_state["winner"]
 
     def get_board_state(self) -> dict[str, list[tuple[int, int]]]:
         """
         Get positions of all buildings by player.
-        Used for visualizing the game state or debugging.
-
-        Returns:
-            Dict mapping player names to their building coordinates
+        Returns dict mapping player names to lists of (q, r) coordinates.
         """
         positions_by_player: dict[str, list[tuple[int, int]]] = {}
 

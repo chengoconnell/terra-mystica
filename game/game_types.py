@@ -13,7 +13,7 @@ from typing import (
 if TYPE_CHECKING:
     from .coords import HexCoord
 
-# Type aliases
+# TYPE: Type aliases
 Name: TypeAlias = str
 """Type alias for a name."""
 
@@ -30,7 +30,6 @@ PowerCount: TypeAlias = int
 # Enums
 class TerrainType(Enum):
     """TYPE: Enum with restricted terrain values.
-
     Simplified to 3 terrain types for manageable implementation.
     """
 
@@ -66,18 +65,12 @@ class PowerActionType(Enum):
 
 
 class GameState(TypedDict):
-    """Simple game state tracking."""
+    """TYPE: TypedDict for game state tracking."""
 
     current_player_index: int
-    turn_count: int
+    current_round: int
     is_finished: bool
     winner: Name | None
-
-
-class IncomeRates(TypedDict):
-    """Income based on buildings."""
-
-    workers_per_dwelling: int
 
 
 # Constants
@@ -97,7 +90,7 @@ TERRAIN_CYCLE: Final[list[TerrainType]] = [
     TerrainType.FOREST,
     TerrainType.DESERT,
 ]
-"""Cycle of terrain types."""
+"""Cycle of terrain types. Can be extended for additional terrains."""
 
 BUILDING_COSTS: Final[dict[BuildingType, "ResourceCost"]] = {
     BuildingType.DWELLING: {"workers": 1, "coins": 2},
@@ -109,6 +102,7 @@ FACTION_STARTING_RESOURCES: Final[dict[FactionType, ResourceState]] = {
     FactionType.ENGINEERS: {"workers": 4, "coins": 12},  # More workers
     FactionType.NOMADS: {"workers": 2, "coins": 18},  # More coins
 }
+"""Starting resources for each faction."""
 
 POWER_ACTION_COSTS: Final[dict[PowerActionType, int]] = {
     PowerActionType.GAIN_SPADES: 4,
@@ -139,12 +133,11 @@ class ResourceCost(TypedDict, total=False):
     spades: int
 
 
-class PowerBowlState(TypedDict):
-    """TYPE: TypedDict for power bowl configuration."""
+class PowerState(TypedDict):
+    """TYPE: TypedDict for simplified power tracking."""
 
-    bowl_1: int
-    bowl_2: int
-    bowl_3: int
+    current: int
+    maximum: int
 
 
 class BuildingData(TypedDict):
@@ -168,21 +161,9 @@ class PlayerView(TypedDict):
     name: Name
     faction: FactionType
     resources: ResourceState
-    power_state: PowerBowlState
+    power_state: PowerState
     buildings: list[tuple[HexCoord, BuildingType]]
     victory_points: VictoryPoints
-
-
-class PlayerData(TypedDict):
-    """TYPE: TypedDict for player data."""
-
-    name: Name
-    faction: FactionType
-    resources: ResourceState
-    power_bowls: PowerBowlState
-    victory_points: VictoryPoints
-    buildings_on_board: list[HexCoord]
-    has_passed: bool
 
 
 # Action types for command pattern
@@ -202,6 +183,7 @@ class BuildAction(TypedDict):
     player: Name
     position: HexCoord
     building_type: BuildingType
+
 
 class PowerAction(TypedDict):
     """TYPE: TypedDict for power action."""
@@ -244,10 +226,6 @@ class ActionExecutor(Protocol):
     TYPE: Protocol for action execution.
     """
 
-    def can_execute(self, action: GameAction) -> bool:
-        """Check if the action can be executed."""
-        ...
-
     def execute(self, action: GameAction) -> None:
         """Execute the action, modifying game state."""
         ...
@@ -267,51 +245,23 @@ class PowerObserver(Protocol):
         builder: Name,
         position: HexCoord,
         building_type: BuildingType,
-    ) -> bool:
-        """Handle notification of adjacent building construction.
-
-        Returns True if the player accepts the power (and VP loss), False if they decline.
-        """
+    ) -> None:
+        """Handle notification of adjacent building construction."""
         ...
 
 
-# Also add this for the power calculation
-class PowerGainOption(TypedDict):
-    """TYPE: TypedDict for power gain decision."""
-
-    power_gain: int
-    vp_cost: VictoryPoints
-    from_buildings: list[BuildingData]
+def is_gain_spades_action(action: PowerAction) -> TypeGuard[PowerAction]:
+    return action["power_action"] == PowerActionType.GAIN_SPADES
 
 
-# Type guards for type narrowing
-def is_transform_action(action: GameAction) -> TypeGuard[TransformAction]:
-    """TYPE: TypeGuard for action type narrowing."""
-    return action["action"] == "transform"
+"""TYPE: TypeGuard for gain spades action type narrowing."""
 
 
-def is_build_action(action: GameAction) -> TypeGuard[BuildAction]:
-    """TYPE: TypeGuard for action type narrowing."""
-    return action["action"] == "build"
+def is_gain_workers_action(action: PowerAction) -> TypeGuard[PowerAction]:
+    return action["power_action"] == PowerActionType.GAIN_WORKERS
 
 
-# Game configuration
-class GameConfig(TypedDict, total=False):
-    """TYPE: TypedDict for game configuration options."""
-
-    starting_workers: int
-    starting_coins: int
-    starting_power_distribution: tuple[int, int]  # (bowl_1, bowl_2)
-    max_turns: int
-
-
-DEFAULT_GAME_CONFIG: Final[GameConfig] = {
-    "starting_workers": 3,
-    "starting_coins": 15,
-    "starting_power_distribution": (5, 7),
-    "max_turns": 30,
-}
-"""Default configuration for standard games."""
+"""TYPE: TypeGuard for gain workers action type narrowing."""
 
 
 # Scoring configuration
